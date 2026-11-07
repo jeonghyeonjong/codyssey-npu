@@ -103,7 +103,7 @@ class LabelNormalizer:
 
 
 class MacEngine:
-    """외부 라이브러리 없이 순수 반복문 기반 MAC(Multiply-Accumulate) 연산을 수행하는 코어 엔진 (SRP)"""
+    """순수 반복문 기반 2D/1D MAC 연산, 허용오차(epsilon) 동점 판정 및 연산 시간 측정을 전담하는 엔진 (SRP)"""
 
     DEFAULT_EPSILON = 1e-9
     DEFAULT_REPEATS = 1000
@@ -131,5 +131,48 @@ class MacEngine:
             for c in range(n):
                 total += p_row[c] * f_row[c]
         return total
+
+    @staticmethod
+    def compute_mac_1d(flat_pattern: list[float], flat_filter: list[float]) -> float:
+        """1차원 평탄화 배열(길이 N²)에 대해 단일 반복문으로 MAC 연산 수행 (메모리 접근 최적화)"""
+        if len(flat_pattern) != len(flat_filter):
+            raise ValueError(
+                f"1차원 배열 길이 불일치: 패턴({len(flat_pattern)}) != 필터({len(flat_filter)})"
+            )
+        total = 0.0
+        for p_val, f_val in zip(flat_pattern, flat_filter):
+            total += p_val * f_val
+        return total
+
+    def judge_scores(
+        self,
+        score_a: float,
+        score_b: float,
+        label_a: str = LabelNormalizer.CROSS,
+        label_b: str = LabelNormalizer.X,
+        tie_label: str = LabelNormalizer.UNDECIDED,
+    ) -> str:
+        """IEEE-754 부동소수점 오차를 고려해 |score_a - score_b| < epsilon 이면 동점(tie_label)으로 판정"""
+        if abs(score_a - score_b) < self.epsilon:
+            return tie_label
+        return label_a if score_a > score_b else label_b
+
+    def measure_pair_mac_ms(
+        self,
+        pattern: Matrix2D,
+        filter_a: Matrix2D,
+        filter_b: Matrix2D,
+        repeats: int = DEFAULT_REPEATS,
+    ) -> tuple[float, float, float]:
+        """콘솔/파일 I/O를 배제하고 순수 MAC 연산 호출 구간의 평균 소요 시간(ms)과 점수를 측정"""
+        iters = max(10, repeats)
+        score_a = 0.0
+        score_b = 0.0
+        start = time.perf_counter()
+        for _ in range(iters):
+            score_a = self.compute_mac_2d(pattern, filter_a)
+            score_b = self.compute_mac_2d(pattern, filter_b)
+        elapsed_ms = ((time.perf_counter() - start) / iters) * 1000.0
+        return score_a, score_b, elapsed_ms
 
 
