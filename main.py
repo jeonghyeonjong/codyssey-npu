@@ -393,3 +393,99 @@ class DatasetRepository:
             return False
 
 
+class SimulatorApp:
+    """콘솔 메뉴 라우팅, 3×3 대화형 검증, data.json 일괄 분석 및 리포트 출력을 제어하는 컨트롤러 (SRP)"""
+
+    def __init__(
+        self,
+        repository: DatasetRepository | None = None,
+        engine: MacEngine | None = None,
+    ):
+        self.repository = repository or DatasetRepository()
+        self.engine = engine or MacEngine()
+
+    @staticmethod
+    def _format_score(score_a: float, score_b: float) -> tuple[str, str]:
+        """두 점수가 매우 근접할 때 부동소수점 정밀도(소수점 16자리)를 그대로 노출하여 오차 현상 가시화"""
+        if abs(score_a - score_b) < 1e-6:
+            return f"{score_a:.16f}", f"{score_b:.16f}"
+        return f"{score_a:.4f}".rstrip("0").rstrip("."), f"{score_b:.4f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _prompt_int_in_range(prompt: str, min_val: int, max_val: int) -> int:
+        while True:
+            raw = input(prompt).strip()
+            if not raw:
+                print(f"[입력 오류] 입력이 비어 있습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.")
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                print(f"[입력 오류] 숫자가 아닙니다. {min_val}~{max_val} 사이의 정수를 입력하세요.")
+                continue
+            if min_val <= value <= max_val:
+                return value
+            print(f"[입력 오류] 허용 범위를 벗어났습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.")
+
+    @staticmethod
+    def read_matrix_from_console(title: str, size: int = 3) -> Matrix2D:
+        """지정된 크기(기본 3×3)의 행렬을 한 줄씩 공백 구분으로 입력받아 행·열 개수 및 실수 파싱 검증"""
+        print(f"\n{title} ({size}줄 입력, 공백 구분)")
+        rows: list[list[float]] = []
+        for row_idx in range(1, size + 1):
+            while True:
+                line = input(f"  {row_idx}행: ").strip()
+                tokens = line.split()
+                if len(tokens) != size:
+                    print(f"입력 형식 오류: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요.")
+                    continue
+                try:
+                    parsed_row = [Matrix2D._validate_number(float(tok), f"{row_idx}행") for tok in tokens]
+                except ValueError:
+                    print(f"입력 형식 오류: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요.")
+                    continue
+                rows.append(parsed_row)
+                break
+        return Matrix2D(rows)
+
+    def run_user_input_mode(self) -> None:
+        """모드 1: 3×3 필터 A, B 입력 -> 저장 확인 -> 패턴 입력 -> MAC 연산/판정 -> 성능 분석(3×3) 출력"""
+        print("\n#----------------------------------------")
+        print("# [1] 필터 입력")
+        print("#----------------------------------------")
+        filter_a = self.read_matrix_from_console("필터 A", 3)
+        filter_b = self.read_matrix_from_console("필터 B", 3)
+        print(
+            f"\n[OK] 필터 저장 확인 완료: 필터 A ({filter_a.size}×{filter_a.size}), "
+            f"필터 B ({filter_b.size}×{filter_b.size})"
+        )
+
+        print("\n#----------------------------------------")
+        print("# [2] 패턴 입력")
+        print("#----------------------------------------")
+        pattern = self.read_matrix_from_console("패턴", 3)
+
+        score_a, score_b, avg_pair_ms = self.engine.measure_pair_mac_ms(pattern, filter_a, filter_b)
+        judgment = self.engine.judge_scores(
+            score_a, score_b, label_a="A", label_b="B", tie_label="판정 불가"
+        )
+        fmt_a, fmt_b = self._format_score(score_a, score_b)
+
+        print("\n#----------------------------------------")
+        print("# [3] MAC 결과")
+        print("#----------------------------------------")
+        print(f"A 점수: {fmt_a}")
+        print(f"B 점수: {fmt_b}")
+        print(f"연산 시간(평균/{self.engine.DEFAULT_REPEATS}회): {avg_pair_ms:.4f} ms")
+        if judgment == "판정 불가":
+            print(f"판정: 판정 불가 (|A-B| < {self.engine.epsilon:.0e})")
+        else:
+            print(f"판정: {judgment}")
+
+        bench = self.engine.benchmark_sizes([3])[0]
+        print("\n#----------------------------------------")
+        print(f"# [4] 성능 분석 (3×3, 평균/{bench['repeats']}회)")
+        print("#----------------------------------------")
+        print(f"{'크기':<8}{'평균 시간(ms)':<16}{'1D 최적화(ms)':<16}{'연산 횟수(N²)':<12}")
+        print("-" * 52)
+        print(f"{'3×3':<8}{bench['avg_2d_ms']:<16.4f}{bench['avg_1d_ms']:<16.4f}{bench['ops']:<12}")
