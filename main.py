@@ -260,3 +260,136 @@ class PatternGenerator:
         }
 
 
+class DatasetRepository:
+    """data.json 로드·키 규칙 해석·백업 복구(.bak) 및 실행 리포트 원자적 저장(os.replace)을 전담하는 클래스 (SRP)"""
+
+    def __init__(self, base_dir: str | None = None, data_filename: str = "data.json"):
+        root = base_dir or os.path.dirname(os.path.abspath(__file__))
+        self.data_file = os.path.join(root, data_filename)
+        self.data_backup_file = f"{self.data_file}.bak"
+        self.data_corrupt_file = f"{self.data_file}.corrupt"
+        self.report_file = os.path.join(root, "report_state.json")
+        self.report_backup_file = os.path.join(root, "report_state.json.bak")
+        self.report_temp_file = os.path.join(root, "report_state.json.tmp")
+
+    @staticmethod
+    def extract_size_from_key(key: str) -> int:
+        """'size_5' 또는 'size_13_2' 형태의 키에서 행렬 크기 정수 N을 추출"""
+        if not isinstance(key, str) or not key.startswith("size_"):
+            raise ValueError(f"키 이름 규칙('size_{{N}}' 또는 'size_{{N}}_{{idx}}') 위반: {key!r}")
+        parts = key.split("_")
+        if len(parts) < 2 or not parts[1].isdigit():
+            raise ValueError(f"키에서 유효한 크기 N을 추출할 수 없습니다: {key!r}")
+        size = int(parts[1])
+        if size <= 0:
+            raise ValueError(f"크기 N은 양의 정수여야 합니다: {key!r}")
+        return size
+
+    def _read_and_check_root(self, filepath: str) -> dict:
+        with open(filepath, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("루트 JSON 데이터는 객체(dict)여야 합니다.")
+        if not isinstance(raw.get("filters"), dict):
+            raise ValueError("'filters' 섹션이 누락되었거나 객체(dict)가 아닙니다.")
+        if not isinstance(raw.get("patterns"), dict):
+            raise ValueError("'patterns' 섹션이 누락되었거나 객체(dict)가 아닙니다.")
+        return raw
+
+    def load_dataset(self) -> dict:
+        """data.json 로드 및 파일 파손 시 .corrupt 격리 후 .bak 백업본으로부터 자동 복구"""
+        if os.path.exists(self.data_file):
+            try:
+                raw = self._read_and_check_root(self.data_file)
+                if not os.path.exists(self.data_backup_file):
+                    try:
+                        shutil.copy2(self.data_file, self.data_backup_file)
+                    except OSError:
+                        pass
+                return raw
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                print(f"[경고] '{os.path.basename(self.data_file)}' 파싱 실패: {exc}")
+                try:
+                    shutil.copy2(self.data_file, self.data_corrupt_file)
+                    print(f"[보호] 손상된 원본을 '{os.path.basename(self.data_corrupt_file)}'로 격리 보존했습니다.")
+                except OSError:
+                    pass
+        else:
+            print(f"[경고] '{os.path.basename(self.data_file)}' 파일이 존재하지 않습니다.")
+
+        if os.path.exists(self.data_backup_file):
+            try:
+                recovered = self._read_and_check_root(self.data_backup_file)
+                shutil.copy2(self.data_backup_file, self.data_file)
+                print(f"[복구] 백업본('{os.path.basename(self.data_backup_file)}')으로부터 데이터를 복원했습니다.")
+                return recovered
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                raise RuntimeError(f"메인 파일과 백업 파일이 모두 손상되어 로드할 수 없습니다: {exc}") from exc
+
+        raise FileNotFoundError(
+            f"분석할 데이터 파일('{self.data_file}')을 찾을 수 없습니다. 경로를 확인해 주세요."
+        )
+
+    def load_normalized_filters(
+        self, raw_filters: dict
+    ) -> tuple[dict[int, dict[str, Matrix2D]], list[str]]:
+        """filters 섹션에서 size_N 별 Cross/X 필터를 정규화 및 크기 검증하여 로드"""
+        loaded: dict[int, dict[str, Matrix2D]] = {}
+        logs: list[str] = []
+
+        for size_key, group in raw_filters.items():
+            try:
+                expected_n = self.extract_size_from_key(size_key)
+                if not isinstance(group, dict):
+                    raise ValueError(f"'{size_key}' 필터 항목이 객체(dict)가 아닙니다.")
+
+                norm_pair: dict[str, Matrix2D] = {}
+                for raw_label, raw_grid in group.items():
+                    std_label = LabelNormalizer.normalize(raw_label)
+                    mat = Matrix2D(raw_grid)
+                    if mat.size != expected_n:
+                        raise ValueError(
+                            f"'{size_key}.{raw_label}' 필터 크기({mat.size}×{mat.size})가 "
+                            f"명시된 크기({expected_n}×{expected_n})와 다릅니다."
+                        )
+                    norm_pair[std_label] = mat
+
+                for req_label in (LabelNormalizer.CROSS, LabelNormalizer.X):
+                    if req_label not in norm_pair:
+                        raise ValueError(f"'{size_key}'에 표준 '{req_label}' 필터가 누락되었습니다.")
+
+                loaded[expected_n] = norm_pair
+                logs.append(f"[OK] {size_key} 필터 로드 완료 (Cross, X)")
+            except ValueError as exc:
+                logs.append(f"[ERR] {size_key} 필터 로드 실패: {exc}")
+
+        return loaded, logs
+
+    def save_report_atomic(self, report: dict) -> bool:
+        """분석 요약 리포트를 .tmp 직렬화 + fsync -> .bak 백업 -> os.replace 원자적 교체로 안전 저장"""
+        try:
+            with open(self.report_temp_file, "w", encoding="utf-8") as tmp_f:
+                json.dump(report, tmp_f, ensure_ascii=False, indent=2)
+                tmp_f.write("\n")
+                tmp_f.flush()
+                os.fsync(tmp_f.fileno())
+
+            if os.path.exists(self.report_file) and os.path.getsize(self.report_file) > 0:
+                try:
+                    with open(self.report_file, "r", encoding="utf-8") as chk:
+                        json.load(chk)
+                    shutil.copy2(self.report_file, self.report_backup_file)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+
+            os.replace(self.report_temp_file, self.report_file)
+            return True
+        except OSError:
+            if os.path.exists(self.report_temp_file):
+                try:
+                    os.remove(self.report_temp_file)
+                except OSError:
+                    pass
+            return False
+
+
