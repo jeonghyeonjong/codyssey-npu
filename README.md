@@ -300,7 +300,26 @@
 
 ![Git Clone and Pull Sync Screenshot](docs/git_clone_pull.png)
 
-    __GIT_LOG_PLACEHOLDER__
+    $ git rev-list --count HEAD
+    14
+
+    $ git log --oneline --graph
+    * (HEAD -> main, origin/main) docs: attach git commit graph and clone/pull remote sync verification
+    * 690987e docs: write comprehensive architecture, failure diagnosis, and O(N^2) report in README
+    * fe9eab5 docs: add real CLI execution screenshots for Mode 1, Mode 2, error isolation, and bonus
+    * 7e30902 test: add automated unit tests for MAC parity, epsilon ties, and error isolation
+    * 8c4dace feat: implement Mode 2 data.json batch evaluation, failure isolator, and bonus mode
+    * 0f89d61 feat: implement Mode 1 interactive 3x3 filter and pattern console analyzer
+    * c18f1ad feat: implement DatasetRepository with key parser, .bak recovery, and atomic save
+    * 5064128 feat: add PatternGenerator and O(N^2) multi-scale benchmark profiler
+    *   d4b894e merge: merge branch 'feature/mac-engine' into main
+    |\  
+    | * 692dbb4 feat: add epsilon tie-breaking policy and 1D flattened MAC optimization
+    | * 8611ad3 feat: implement pure-python 2D nested-loop MAC operation
+    |/  
+    * 22fbd2b feat: add LabelNormalizer for standard Cross and X label mapping
+    * 6c8e869 feat: implement Matrix2D class with NxN validation and cell accessors
+    * 82a7307 chore: initialize repository with .gitignore and official data.json
 
 ---
 
