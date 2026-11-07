@@ -394,7 +394,9 @@ class DatasetRepository:
 
 
 class SimulatorApp:
-    """콘솔 메뉴 라우팅, 3×3 대화형 검증, data.json 일괄 분석 및 리포트 출력을 제어하는 컨트롤러 (SRP)"""
+    """콘솔 메뉴 제어, 3×3 대화형 분석, data.json 일괄 검증 및 성능·결과 리포트를 총괄하는 컨트롤러 (SRP)"""
+
+    BENCHMARK_SIZES = [3, 5, 13, 25]
 
     def __init__(
         self,
@@ -406,10 +408,30 @@ class SimulatorApp:
 
     @staticmethod
     def _format_score(score_a: float, score_b: float) -> tuple[str, str]:
-        """두 점수가 매우 근접할 때 부동소수점 정밀도(소수점 16자리)를 그대로 노출하여 오차 현상 가시화"""
+        """두 점수가 근접한 동점 경계 케이스에서 IEEE-754 소수점 16자리 정밀도를 그대로 노출"""
         if abs(score_a - score_b) < 1e-6:
             return f"{score_a:.16f}", f"{score_b:.16f}"
         return f"{score_a:.4f}".rstrip("0").rstrip("."), f"{score_b:.4f}".rstrip("0").rstrip(".")
+
+    @staticmethod
+    def _diagnose_case_failure(
+        predicted: str,
+        expected: str,
+        score_cross: float,
+        score_x: float,
+        epsilon: float,
+    ) -> str:
+        """판정 불일치 발생 시 수치 비교(동점 규칙) vs 반대 라벨 오분류 원인을 명확히 요약"""
+        diff = abs(score_cross - score_x)
+        if predicted == LabelNormalizer.UNDECIDED:
+            return (
+                f"동점(UNDECIDED) 처리 규칙에 따라 FAIL "
+                f"(|Cross-X| = {diff:.2e} < {epsilon:.0e}, expected: {expected})"
+            )
+        return (
+            f"예측 라벨 불일치로 FAIL "
+            f"(판정: {predicted}, expected: {expected}, Cross={score_cross:.4f}, X={score_x:.4f})"
+        )
 
     @staticmethod
     def _prompt_int_in_range(prompt: str, min_val: int, max_val: int) -> int:
@@ -448,6 +470,29 @@ class SimulatorApp:
                 break
         return Matrix2D(rows)
 
+    def print_benchmark_table(
+        self,
+        sizes: list[int],
+        filters_by_size: dict[int, dict[str, Matrix2D]] | None = None,
+        section_num: int = 3,
+    ) -> list[dict]:
+        """크기별 평균 MAC 연산 시간(2D vs 1D 최적화, ms) 및 연산 횟수(N²) 표 출력"""
+        records = self.engine.benchmark_sizes(sizes, filters_by_size=filters_by_size)
+        repeats = records[0]["repeats"] if records else self.engine.DEFAULT_REPEATS
+
+        print("\n#----------------------------------------")
+        print(f"# [{section_num}] 성능 분석 (평균/{repeats}회)")
+        print("#----------------------------------------")
+        print(f"{'크기':<10}{'평균 시간(ms)':<16}{'1D 최적화(ms)':<16}{'연산 횟수(N²)':<14}")
+        print("-" * 56)
+        for rec in records:
+            label = f"{rec['size']}×{rec['size']}"
+            print(
+                f"{label:<10}{rec['avg_2d_ms']:<16.4f}"
+                f"{rec['avg_1d_ms']:<16.4f}{rec['ops']:<14}"
+            )
+        return records
+
     def run_user_input_mode(self) -> None:
         """모드 1: 3×3 필터 A, B 입력 -> 저장 확인 -> 패턴 입력 -> MAC 연산/판정 -> 성능 분석(3×3) 출력"""
         print("\n#----------------------------------------")
@@ -482,10 +527,181 @@ class SimulatorApp:
         else:
             print(f"판정: {judgment}")
 
-        bench = self.engine.benchmark_sizes([3])[0]
+        self.print_benchmark_table([3], section_num=4)
+
+    def evaluate_dataset(self) -> dict:
+        """모드 2: data.json 로드 -> 라벨 정규화 및 크기 검증 -> 케이스별 MAC 판정(케이스 단위 FAIL 격리) -> 성능·요약 출력"""
+        raw_data = self.repository.load_dataset()
+
         print("\n#----------------------------------------")
-        print(f"# [4] 성능 분석 (3×3, 평균/{bench['repeats']}회)")
+        print("# [1] 필터 로드")
         print("#----------------------------------------")
-        print(f"{'크기':<8}{'평균 시간(ms)':<16}{'1D 최적화(ms)':<16}{'연산 횟수(N²)':<12}")
-        print("-" * 52)
-        print(f"{'3×3':<8}{bench['avg_2d_ms']:<16.4f}{bench['avg_1d_ms']:<16.4f}{bench['ops']:<12}")
+        filters_by_size, filter_logs = self.repository.load_normalized_filters(raw_data["filters"])
+        for msg in filter_logs:
+            print(msg)
+
+        print("\n#----------------------------------------")
+        print("# [2] 패턴 분석 (라벨 정규화 적용)")
+        print("#----------------------------------------")
+        raw_patterns: dict = raw_data["patterns"]
+        total_count = 0
+        pass_count = 0
+        fail_cases: list[dict] = []
+
+        for case_id, entry in raw_patterns.items():
+            total_count += 1
+            print(f"--- {case_id} ---")
+            try:
+                target_n = self.repository.extract_size_from_key(case_id)
+                if target_n not in filters_by_size:
+                    raise ValueError(f"매칭되는 'size_{target_n}' 필터가 로드되어 있지 않습니다.")
+
+                if not isinstance(entry, dict) or "input" not in entry or "expected" not in entry:
+                    raise ValueError("패턴 항목에 필수 필드('input' 또는 'expected')가 누락되었습니다.")
+
+                expected_std = LabelNormalizer.normalize(entry["expected"])
+                pattern = Matrix2D(entry["input"])
+
+                if pattern.size != target_n:
+                    raise ValueError(
+                        f"필터 크기({target_n}×{target_n})와 입력 패턴 크기({pattern.size}×{pattern.size}) 불일치"
+                    )
+
+                filter_pair = filters_by_size[target_n]
+                score_cross = self.engine.compute_mac_2d(pattern, filter_pair[LabelNormalizer.CROSS])
+                score_x = self.engine.compute_mac_2d(pattern, filter_pair[LabelNormalizer.X])
+                predicted = self.engine.judge_scores(score_cross, score_x)
+
+                fmt_cross, fmt_x = self._format_score(score_cross, score_x)
+                print(f"Cross 점수: {fmt_cross}")
+                print(f"X 점수: {fmt_x}")
+
+                if predicted == expected_std:
+                    pass_count += 1
+                    print(f"판정: {predicted} | expected: {expected_std} | PASS")
+                else:
+                    reason = self._diagnose_case_failure(
+                        predicted, expected_std, score_cross, score_x, self.engine.epsilon
+                    )
+                    tag = "FAIL (동점 규칙)" if predicted == LabelNormalizer.UNDECIDED else "FAIL"
+                    print(f"판정: {predicted} | expected: {expected_std} | {tag}")
+                    fail_cases.append({"case_id": case_id, "reason": reason})
+
+            except ValueError as exc:
+                reason = f"스키마/크기 검증 오류로 FAIL ({exc})"
+                print(f"판정: ERROR | FAIL - {exc}")
+                fail_cases.append({"case_id": case_id, "reason": reason})
+
+        bench_records = self.print_benchmark_table(
+            self.BENCHMARK_SIZES, filters_by_size=filters_by_size, section_num=3
+        )
+
+        fail_count = total_count - pass_count
+        print("\n#----------------------------------------")
+        print("# [4] 결과 요약")
+        print("#----------------------------------------")
+        print(f"총 테스트: {total_count}개")
+        print(f"통과: {pass_count}개")
+        print(f"실패: {fail_count}개")
+
+        if fail_cases:
+            print("\n실패 케이스:")
+            for item in fail_cases:
+                print(f"- {item['case_id']}: {item['reason']}")
+        else:
+            print("\n실패 케이스 없음 (라벨 정규화 및 허용오차 비교 정책 정상 적용)")
+
+        summary_payload = {
+            "analyzed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total": total_count,
+            "passed": pass_count,
+            "failed": fail_count,
+            "fail_cases": fail_cases,
+            "benchmarks": bench_records,
+        }
+        self.repository.save_report_atomic(summary_payload)
+        return summary_payload
+
+    def run_bonus_generator_and_optimization_mode(self) -> None:
+        """모드 3(보너스): 크기 N 자동 패턴 생성기 시연 및 2D vs 1D 평탄화 메모리 접근 성능 비교"""
+        print("\n#----------------------------------------")
+        print("# [보너스 1 & 2] N×N 패턴 자동 생성 및 2D vs 1D 메모리 최적화 비교")
+        print("#----------------------------------------")
+        n = self._prompt_int_in_range("생성할 정방 패턴 크기 N 입력 (3~51): ", 3, 51)
+        pair = PatternGenerator.generate_pair(n)
+        cross_mat = pair[LabelNormalizer.CROSS]
+        x_mat = pair[LabelNormalizer.X]
+
+        print(f"\n[OK] {n}×{n} Cross 및 X 패턴 자동 생성 완료")
+        if n <= 15:
+            print(f"\n[생성된 {n}×{n} Cross 패턴 미리보기]")
+            print(cross_mat.format_visual())
+            print(f"\n[생성된 {n}×{n} X 패턴 미리보기]")
+            print(x_mat.format_visual())
+
+        score_cc_2d = self.engine.compute_mac_2d(cross_mat, cross_mat)
+        score_cc_1d = self.engine.compute_mac_1d(cross_mat.to_flat_list(), cross_mat.to_flat_list())
+        score_cx_2d = self.engine.compute_mac_2d(cross_mat, x_mat)
+        print(
+            f"\n[정합성 검증] Cross×Cross (2D={score_cc_2d:.1f}, 1D={score_cc_1d:.1f}) | "
+            f"Cross×X 교차 점수={score_cx_2d:.1f}"
+        )
+
+        target_sizes = sorted(set(self.BENCHMARK_SIZES + [n]))
+        records = self.engine.benchmark_sizes(target_sizes)
+        print(f"\n[2D 중첩 리스트 vs 1D 평탄화 배열(길이 N²) 성능 비교 (평균/{records[0]['repeats']}회)]")
+        print(f"{'크기':<10}{'2D 평균(ms)':<15}{'1D 평균(ms)':<15}{'속도 개선율':<14}{'연산 횟수(N²)':<12}")
+        print("-" * 66)
+        for rec in records:
+            label = f"{rec['size']}×{rec['size']}"
+            print(
+                f"{label:<10}{rec['avg_2d_ms']:<15.4f}{rec['avg_1d_ms']:<15.4f}"
+                f"{rec['speedup_pct']:>+8.1f}%     {rec['ops']:<12}"
+            )
+
+    def print_menu(self) -> None:
+        print("\n=== Mini NPU Simulator ===")
+        print("\n[모드 선택]")
+        print("1. 사용자 입력 (3x3)")
+        print("2. data.json 분석")
+        print("3. 패턴 생성기 및 2D/1D 메모리 최적화 비교 (보너스)")
+        print("4. 종료")
+
+    def run(self) -> None:
+        """메인 시뮬레이터 루프 및 Ctrl+C / EOF 안전 종료 보장"""
+        while True:
+            try:
+                self.print_menu()
+                choice = self._prompt_int_in_range("선택: ", 1, 4)
+                if choice == 1:
+                    self.run_user_input_mode()
+                elif choice == 2:
+                    try:
+                        self.evaluate_dataset()
+                    except (FileNotFoundError, RuntimeError) as exc:
+                        print(f"\n[데이터 오류] {exc}")
+                elif choice == 3:
+                    self.run_bonus_generator_and_optimization_mode()
+                elif choice == 4:
+                    print("\n시뮬레이터를 정상 종료합니다. 이용해 주셔서 감사합니다!")
+                    return
+            except (KeyboardInterrupt, EOFError):
+                print("\n\n[안전 종료] 종료 신호가 감지되어 시뮬레이터를 안전하게 종료합니다.")
+                return
+
+
+def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    try:
+        app = SimulatorApp()
+        app.run()
+    except (KeyboardInterrupt, EOFError):
+        print("\n[안전 종료] 프로그램을 정상 종료합니다.")
+
+
+if __name__ == "__main__":
+    main()
