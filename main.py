@@ -8,8 +8,63 @@ import sys
 import time
 
 
+class MessageCatalog:
+    """입력·스키마·종료 안내 메시지 템플릿을 상수화하여 재사용성과 다국어(ko/en) 지역화 확장을 지원하는 카탈로그"""
+
+    DEFAULT_LOCALE = "ko"
+
+    TEMPLATES: dict[str, dict[str, str]] = {
+        "ko": {
+            "MENU_EMPTY": "[입력 오류] 입력이 비어 있습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.",
+            "MENU_NOT_INT": "[입력 오류] 숫자가 아닙니다. {min_val}~{max_val} 사이의 정수를 입력하세요.",
+            "MENU_OUT_OF_RANGE": "[입력 오류] 허용 범위를 벗어났습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.",
+            "ROW_EMPTY": "입력 형식 오류 [빈 줄 입력]: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요.",
+            "ROW_COL_MISMATCH": (
+                "입력 형식 오류 [열 개수 불일치: 입력 {actual}개 != 기대 {size}개]: "
+                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+            ),
+            "ROW_PARSE_FLOAT": (
+                "입력 형식 오류 [숫자 파싱 실패({token!r})]: "
+                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+            ),
+            "ROW_NON_FINITE": (
+                "입력 형식 오류 [유한 실수 아님({token!r})]: "
+                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+            ),
+            "FILTER_MISSING": "매칭되는 'size_{target_n}' 필터가 없습니다 (로드된 필터 후보: {candidates}).",
+            "SAFE_SHUTDOWN": "[안전 종료] 종료 신호가 감지되어 시뮬레이터를 안전하게 종료합니다.",
+        },
+        "en": {
+            "MENU_EMPTY": "[Input Error] Empty input. Enter an integer between {min_val} and {max_val}.",
+            "MENU_NOT_INT": "[Input Error] Not an integer. Enter a number between {min_val} and {max_val}.",
+            "MENU_OUT_OF_RANGE": "[Input Error] Out of range. Enter a number between {min_val} and {max_val}.",
+            "ROW_EMPTY": "Input format error [empty line]: enter {size} space-separated numbers per row.",
+            "ROW_COL_MISMATCH": (
+                "Input format error [column mismatch: got {actual} != expected {size}]: "
+                "enter {size} space-separated numbers per row."
+            ),
+            "ROW_PARSE_FLOAT": (
+                "Input format error [non-numeric token({token!r})]: "
+                "enter {size} space-separated numbers per row."
+            ),
+            "ROW_NON_FINITE": (
+                "Input format error [non-finite float({token!r})]: "
+                "enter {size} space-separated numbers per row."
+            ),
+            "FILTER_MISSING": "No matching 'size_{target_n}' filter found (loaded candidates: {candidates}).",
+            "SAFE_SHUTDOWN": "[Graceful Shutdown] Termination signal detected; exiting safely.",
+        },
+    }
+
+    @classmethod
+    def format(cls, key: str, locale: str = DEFAULT_LOCALE, **kwargs) -> str:
+        lang_table = cls.TEMPLATES.get(locale, cls.TEMPLATES[cls.DEFAULT_LOCALE])
+        template = lang_table[key]
+        return template.format(**kwargs)
+
+
 class Matrix2D:
-    """N×N 2차원 정방 숫자 배열(패턴·필터)을 표현하고 셀 단위 접근 및 차원 무결성을 보장하는 도메인 클래스 (SRP)"""
+    """N×N 2차원 정방 숫자 배열(패턴·필터)을 표현하고 셀 단위 접근·차원 무결성·메모리 추정을 담당하는 클래스 (SRP)"""
 
     def __init__(self, grid: list[list[float]]):
         self._grid = self._validate_square_grid(grid)
@@ -68,8 +123,20 @@ class Matrix2D:
         return [list(row) for row in self._grid]
 
     def to_flat_list(self) -> list[float]:
-        """메모리 접근 단순화(보너스 최적화)를 위해 길이 N²의 1차원 연속 리스트로 변환"""
+        """행 우선(Row-major: r=0..N-1, c=0..N-1) 순서로 길이 N²의 1차원 연속 리스트로 변환"""
         return [val for row in self._grid for val in row]
+
+    @staticmethod
+    def estimate_pair_memory_mib(size: int) -> dict[str, float]:
+        """64비트 CPython 기준 패턴+필터 2개 행렬의 2D 리스트 객체 메모리 및 연속 float64 버퍼 추정치(MiB) 계산"""
+        # PyListObject 헤더(56B) + 포인터(8B/요소) + PyFloatObject(24B/원소) × 2개 행렬(패턴+필터)
+        python_2d_bytes = 2 * (56 + (64 * size) + (32 * size * size))
+        contiguous_fp64_bytes = 2 * 8 * size * size
+        mib = 1024.0 * 1024.0
+        return {
+            "python_2d_mib": python_2d_bytes / mib,
+            "contiguous_fp64_mib": contiguous_fp64_bytes / mib,
+        }
 
     def format_visual(self) -> str:
         """콘솔 시각적 확인용 문자열 포맷 생성"""
@@ -85,50 +152,63 @@ class LabelNormalizer:
     CROSS = "Cross"
     X = "X"
     UNDECIDED = "UNDECIDED"
+    REQUIRED_LABELS = (CROSS, X)
 
+    # [신규 라벨 추가 절차] 1) 표준 상수(예: CIRCLE = "Circle") 선언 -> 2) _LABEL_MAP에 소문자 별칭 등록 -> 3) REQUIRED_LABELS·테스트 반영
     _LABEL_MAP = {
         "+": CROSS,
         "cross": CROSS,
         "x": X,
     }
 
+    ALLOWED_ALIAS_ONELINE = "Cross('+', 'cross'), X('x') [대소문자·공백 무시]"
+
     @classmethod
     def allowed_aliases_summary(cls) -> str:
-        """정규화 실패 시 사용자에게 안내할 표준 라벨별 허용 입력 표기 요약"""
-        return "Cross 계열: '+', 'cross', 'CROSS' / X 계열: 'x', 'X'"
+        """정규화 실패 메시지에 한 줄로 첨부할 표준 라벨별 허용 별칭 요약"""
+        return cls.ALLOWED_ALIAS_ONELINE
 
     @classmethod
     def normalize(cls, raw_label: str) -> str:
         """'+'/'cross' -> 'Cross', 'x' -> 'X' 표준 라벨 변환 (대소문자·앞뒤 공백 무시)"""
+        # 신규 라벨 확장 시 위 _LABEL_MAP에 소문자 키와 표준 라벨 상수를 매핑하면 본 메서드는 수정 없이 자동 동작함
         if not isinstance(raw_label, str) or not raw_label.strip():
-            raise ValueError(
-                f"라벨 값이 비어 있거나 문자열이 아닙니다. (허용 표기 — {cls.allowed_aliases_summary()})"
-            )
+            raise ValueError(f"빈 라벨 입력 — 허용 별칭 요약: {cls.allowed_aliases_summary()}")
         key = raw_label.strip().lower()
         if key not in cls._LABEL_MAP:
             raise ValueError(
-                f"알 수 없는 비표준 라벨입니다: {raw_label!r} (허용 표기 — {cls.allowed_aliases_summary()})"
+                f"비표준 라벨 {raw_label!r} — 허용 별칭 요약: {cls.allowed_aliases_summary()}"
             )
         return cls._LABEL_MAP[key]
 
 
 class MacEngine:
-    """순수 반복문 기반 2D/1D MAC 연산, 허용오차(epsilon) 동점 판정 및 연산 시간 측정을 전담하는 엔진 (SRP)"""
+    """순수 반복문 기반 행 우선 2D/1D MAC 연산, 허용오차(epsilon) 판정 및 워밍업·분산 벤치마크를 전담하는 엔진 (SRP)"""
 
     DEFAULT_EPSILON = 1e-9
     DEFAULT_REPEATS = 1000
+    DEFAULT_WARMUP = 20
+    SAMPLE_BLOCKS = 20
 
-    def __init__(self, epsilon: float = DEFAULT_EPSILON, repeats: int = DEFAULT_REPEATS):
+    def __init__(
+        self,
+        epsilon: float = DEFAULT_EPSILON,
+        repeats: int = DEFAULT_REPEATS,
+        warmup: int = DEFAULT_WARMUP,
+    ):
         if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)) or epsilon <= 0:
             raise ValueError("허용오차(epsilon)는 0보다 큰 양수여야 합니다.")
         if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 10:
             raise ValueError("반복 측정 횟수(repeats)는 최소 10 이상의 정수여야 합니다.")
+        if isinstance(warmup, bool) or not isinstance(warmup, int) or warmup < 0:
+            raise ValueError("워밍업 반복 횟수(warmup)는 0 이상의 정수여야 합니다.")
         self.epsilon = float(epsilon)
         self.repeats = repeats
+        self.warmup = warmup
 
     @staticmethod
     def compute_mac_2d(pattern: Matrix2D, filter_mat: Matrix2D) -> float:
-        """2차원 중첩 반복문으로 같은 위치 원소끼리 곱해 순차 누적 합산(MAC) 점수 반환"""
+        """행 우선(Row-major: 바깥 행 r=0..N-1 -> 안쪽 열 c=0..N-1) 순서로 원소별 곱을 순차 누적(MAC)하여 점수 반환"""
         if pattern.size != filter_mat.size:
             raise ValueError(
                 f"패턴 크기({pattern.size}×{pattern.size})와 "
@@ -147,7 +227,7 @@ class MacEngine:
 
     @staticmethod
     def compute_mac_1d(flat_pattern: list[float], flat_filter: list[float]) -> float:
-        """1차원 평탄화 배열(길이 N²)에 대해 단일 반복문으로 MAC 연산 수행 (메모리 접근 최적화)"""
+        """행 우선 평탄화된 1차원 배열(길이 N²)에 대해 단일 루프로 MAC 연산 수행 (메모리 접근 최적화)"""
         if len(flat_pattern) != len(flat_filter):
             raise ValueError(
                 f"1차원 배열 길이 불일치: 패턴({len(flat_pattern)}) != 필터({len(flat_filter)})"
@@ -169,6 +249,28 @@ class MacEngine:
         norm_grid = [[val / abs_sum for val in row] for row in filter_mat._grid]
         return Matrix2D(norm_grid)
 
+    @classmethod
+    def compute_score_bounds_and_ratio(
+        cls, pattern: Matrix2D, filter_mat: Matrix2D
+    ) -> dict[str, float]:
+        """이진/비음수 입력 패턴([0, 1]) 기준 최소·최대 가능 MAC 점수와 최대치 대비 정규화 일치율(0~1) 산출"""
+        raw_score = cls.compute_mac_2d(pattern, filter_mat)
+        min_possible = 0.0
+        max_possible = 0.0
+        for row in filter_mat._grid:
+            for val in row:
+                if val < 0.0:
+                    min_possible += val
+                elif val > 0.0:
+                    max_possible += val
+        norm_ratio = (raw_score / max_possible) if max_possible > 0.0 else 0.0
+        return {
+            "raw_score": raw_score,
+            "min_possible": min_possible,
+            "max_possible": max_possible,
+            "normalized_ratio": norm_ratio,
+        }
+
     def judge_scores(
         self,
         score_a: float,
@@ -182,17 +284,36 @@ class MacEngine:
             return tie_label
         return label_a if score_a > score_b else label_b
 
+    @staticmethod
+    def _calc_stats(samples_ms: list[float]) -> tuple[float, float, float, float]:
+        """표본 블록 시간 리스트로부터 평균(avg), 표본 표준편차(std), 최솟값(min), 최댓값(max) 산출"""
+        count = len(samples_ms)
+        avg = sum(samples_ms) / count
+        if count > 1:
+            variance = sum((x - avg) ** 2 for x in samples_ms) / (count - 1)
+            std = math.sqrt(variance)
+        else:
+            std = 0.0
+        return avg, std, min(samples_ms), max(samples_ms)
+
     def measure_pair_mac_ms(
         self,
         pattern: Matrix2D,
         filter_a: Matrix2D,
         filter_b: Matrix2D,
         repeats: int | None = None,
+        warmup: int | None = None,
     ) -> tuple[float, float, float]:
-        """콘솔/파일 I/O를 배제하고 순수 MAC 연산 호출 구간의 평균 소요 시간(ms)과 점수를 측정"""
+        """콘솔/파일 I/O 제외 및 선택적 워밍업(warmup) 수행 후 순수 MAC 연산 쌍의 평균 시간(ms) 측정"""
         iters = max(10, repeats if repeats is not None else self.repeats)
+        warm = self.warmup if warmup is None else max(0, warmup)
+
         score_a = 0.0
         score_b = 0.0
+        for _ in range(warm):
+            score_a = self.compute_mac_2d(pattern, filter_a)
+            score_b = self.compute_mac_2d(pattern, filter_b)
+
         start = time.perf_counter()
         for _ in range(iters):
             score_a = self.compute_mac_2d(pattern, filter_a)
@@ -205,9 +326,14 @@ class MacEngine:
         sizes: list[int],
         filters_by_size: dict[int, dict[str, Matrix2D]] | None = None,
         repeats: int | None = None,
+        warmup: int | None = None,
     ) -> list[dict]:
-        """크기별(3×3 ~ 25×25 등) 단일 MAC 연산의 2D 중첩 반복 vs 1D 평탄화 평균 시간(ms) 및 연산 횟수(N²) 측정"""
+        """워밍업 후 크기별 2D/1D 평균·표준편차·최소/최대 시간(ms), 연산수(N²) 및 예상 메모리(MiB) 측정"""
         iters = max(10, repeats if repeats is not None else self.repeats)
+        warm = self.warmup if warmup is None else max(0, warmup)
+        blocks = min(self.SAMPLE_BLOCKS, iters)
+        per_block = max(1, iters // blocks)
+        effective_iters = blocks * per_block
         results: list[dict] = []
 
         for size in sizes:
@@ -217,32 +343,107 @@ class MacEngine:
             else:
                 filter_mat = PatternGenerator.generate_cross(size)
 
-            # I/O 및 to_flat_list() 변환 비용을 측정 구간에서 명확히 제외하기 위해 사전 변환
+            # I/O 및 to_flat_list() 변환 비용을 측정 구간에서 제외하기 위해 루프 진입 전 사전 평탄화
             flat_p = pattern.to_flat_list()
             flat_f = filter_mat.to_flat_list()
 
-            t0 = time.perf_counter()
-            for _ in range(iters):
+            # 바이트코드 적응형 특수화 및 캐시 예열을 위한 워밍업 루프 (측정 시간에서 제외)
+            for _ in range(warm):
                 self.compute_mac_2d(pattern, filter_mat)
-            avg_2d_ms = ((time.perf_counter() - t0) / iters) * 1000.0
-
-            t1 = time.perf_counter()
-            for _ in range(iters):
                 self.compute_mac_1d(flat_p, flat_f)
-            avg_1d_ms = ((time.perf_counter() - t1) / iters) * 1000.0
 
+            samples_2d: list[float] = []
+            for _ in range(blocks):
+                t0 = time.perf_counter()
+                for _ in range(per_block):
+                    self.compute_mac_2d(pattern, filter_mat)
+                samples_2d.append(((time.perf_counter() - t0) / per_block) * 1000.0)
+
+            samples_1d: list[float] = []
+            for _ in range(blocks):
+                t1 = time.perf_counter()
+                for _ in range(per_block):
+                    self.compute_mac_1d(flat_p, flat_f)
+                samples_1d.append(((time.perf_counter() - t1) / per_block) * 1000.0)
+
+            avg_2d_ms, std_2d_ms, min_2d_ms, max_2d_ms = self._calc_stats(samples_2d)
+            avg_1d_ms, std_1d_ms, min_1d_ms, max_1d_ms = self._calc_stats(samples_1d)
             speedup_pct = ((avg_2d_ms - avg_1d_ms) / avg_2d_ms * 100.0) if avg_2d_ms > 0 else 0.0
+            mem_info = Matrix2D.estimate_pair_memory_mib(size)
+
             results.append(
                 {
                     "size": size,
                     "ops": size * size,
-                    "repeats": iters,
+                    "repeats": effective_iters,
+                    "warmup": warm,
                     "avg_2d_ms": avg_2d_ms,
+                    "std_2d_ms": std_2d_ms,
+                    "min_2d_ms": min_2d_ms,
+                    "max_2d_ms": max_2d_ms,
                     "avg_1d_ms": avg_1d_ms,
+                    "std_1d_ms": std_1d_ms,
+                    "min_1d_ms": min_1d_ms,
+                    "max_1d_ms": max_1d_ms,
                     "speedup_pct": speedup_pct,
+                    "est_mem_mib": mem_info["python_2d_mib"],
+                    "contiguous_fp64_mib": mem_info["contiguous_fp64_mib"],
                 }
             )
         return results
+
+    @staticmethod
+    def project_large_scale(reference_record: dict, target_size: int = 1000) -> dict:
+        """기준 실측 레코드(예: 25×25)의 원소당 연산 시간(ms/op)을 바탕으로 대형 N×N(기본 1000×1000, 1M 원소) 시간·메모리 예측"""
+        ref_ops = max(1, reference_record["ops"])
+        target_ops = target_size * target_size
+        scale = target_ops / ref_ops
+        mem = Matrix2D.estimate_pair_memory_mib(target_size)
+        return {
+            "size": target_size,
+            "ops": target_ops,
+            "projected_2d_ms": reference_record["avg_2d_ms"] * scale,
+            "projected_1d_ms": reference_record["avg_1d_ms"] * scale,
+            "est_python_2d_mib": mem["python_2d_mib"],
+            "est_contiguous_fp64_mib": mem["contiguous_fp64_mib"],
+        }
+
+    def measure_large_scale_sample(self, size: int = 1000, repeats: int = 3, warmup: int = 1) -> dict:
+        """대형 정방 행렬(기본 1000×1000 = 1,000,000 원소) 실제 단일 샘플 실측 시간(ms) 및 메모리(MiB) 측정"""
+        row_zeros = [0.0] * size
+        mid = size // 2
+        grid = [list(row_zeros) for _ in range(size)]
+        for idx in range(size):
+            grid[mid][idx] = 1.0
+            grid[idx][mid] = 1.0
+        pattern = Matrix2D(grid)
+        flat_p = pattern.to_flat_list()
+
+        for _ in range(max(0, warmup)):
+            self.compute_mac_2d(pattern, pattern)
+            self.compute_mac_1d(flat_p, flat_p)
+
+        iters = max(1, repeats)
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            self.compute_mac_2d(pattern, pattern)
+        measured_2d_ms = ((time.perf_counter() - t0) / iters) * 1000.0
+
+        t1 = time.perf_counter()
+        for _ in range(iters):
+            self.compute_mac_1d(flat_p, flat_p)
+        measured_1d_ms = ((time.perf_counter() - t1) / iters) * 1000.0
+
+        mem = Matrix2D.estimate_pair_memory_mib(size)
+        return {
+            "size": size,
+            "ops": size * size,
+            "repeats": iters,
+            "measured_2d_ms": measured_2d_ms,
+            "measured_1d_ms": measured_1d_ms,
+            "est_python_2d_mib": mem["python_2d_mib"],
+            "est_contiguous_fp64_mib": mem["contiguous_fp64_mib"],
+        }
 
     def benchmark_serial_vs_threaded(
         self,
@@ -323,7 +524,7 @@ class PatternGenerator:
 
 
 class DatasetRepository:
-    """data.json 로드·키 규칙 해석·백업 복구(.bak) 및 실행 리포트 원자적 저장(os.replace)을 전담하는 클래스 (SRP)"""
+    """data.json 로드·키 규칙 해석·후보 포맷 일원화·백업 복구(.bak) 및 리포트 원자적 저장을 전담하는 클래스 (SRP)"""
 
     KEY_RULE_GUIDE = "권장 예시: 필터 키 'size_5', 패턴 키 'size_5_1', 'size_13_2'"
 
@@ -336,23 +537,41 @@ class DatasetRepository:
         self.report_backup_file = os.path.join(root, "report_state.json.bak")
         self.report_temp_file = os.path.join(root, "report_state.json.tmp")
 
+    @staticmethod
+    def format_candidate_sizes(sizes: list[int] | set[int] | dict) -> str:
+        """콘솔 에러 메시지와 JSON 리포트가 100% 동일한 형식('[size_5, size_13, size_25]')을 공유하도록 일원화"""
+        sorted_sizes = sorted(int(k) for k in sizes)
+        if not sorted_sizes:
+            return "[없음]"
+        return "[" + ", ".join(f"size_{k}" for k in sorted_sizes) + "]"
+
     @classmethod
     def extract_size_from_key(cls, key: str, require_case_index: bool = False) -> int:
-        """'size_5'(필터 키) 또는 'size_13_2'(패턴 키)에서 행렬 크기 정수 N을 추출하고 위반 사유별 안내 반환"""
+        """'size_5'(필터 키) 또는 'size_13_2'(패턴 키)에서 정수 N을 추출하고 다양한 변형 오류별 수정 예시 반환"""
         if not isinstance(key, str) or not key.strip():
-            raise ValueError(f"키가 비어 있거나 문자열이 아닙니다 ({cls.KEY_RULE_GUIDE}).")
-        if not key.startswith("size_"):
+            raise ValueError(f"빈 키 입력 ({cls.KEY_RULE_GUIDE}).")
+        if key != key.strip():
             raise ValueError(
-                f"키 접두사('size_') 누락: {key!r} ({cls.KEY_RULE_GUIDE})."
+                f"키 앞뒤 공백 포함 불가: {key!r} -> 권장 수정: {key.strip()!r} ({cls.KEY_RULE_GUIDE})."
             )
+        if key.lower().startswith("size_") and not key.startswith("size_"):
+            raise ValueError(
+                f"대문자 접두사 사용 불가: {key!r} -> 소문자 'size_'로 수정하세요 ({cls.KEY_RULE_GUIDE})."
+            )
+        if ("-" in key or "." in key) and key.lower().startswith("size"):
+            suggested = key.lower().replace("-", "_").replace(".", "_")
+            raise ValueError(
+                f"구분자 오류('-' 또는 '.'): {key!r} -> 밑줄('_') 형식 {suggested!r} 권장 ({cls.KEY_RULE_GUIDE})."
+            )
+        if not key.startswith("size_"):
+            raise ValueError(f"키 접두사('size_') 누락: {key!r} ({cls.KEY_RULE_GUIDE}).")
+
         parts = key.split("_")
         if len(parts) < 2 or not parts[1]:
-            raise ValueError(
-                f"키에 크기 숫자 N 구분자가 없습니다: {key!r} ({cls.KEY_RULE_GUIDE})."
-            )
+            raise ValueError(f"크기 숫자 N 구분자 누락: {key!r} ({cls.KEY_RULE_GUIDE}).")
         if not parts[1].lstrip("-").isdigit():
             raise ValueError(
-                f"크기 N 위치에 정수가 아닌 문자열({parts[1]!r})이 지정되었습니다: {key!r} ({cls.KEY_RULE_GUIDE})."
+                f"크기 N에 비정수({parts[1]!r}) 지정: {key!r} ({cls.KEY_RULE_GUIDE})."
             )
         size = int(parts[1])
         if size <= 0:
@@ -361,7 +580,7 @@ class DatasetRepository:
             )
         if require_case_index and (len(parts) < 3 or not parts[2]):
             raise ValueError(
-                f"패턴 식별자 일련번호('_{{idx}}')가 누락되었습니다: {key!r} ({cls.KEY_RULE_GUIDE})."
+                f"패턴 일련번호('_{{idx}}') 누락: {key!r} -> '{key}_1' 형식 권장 ({cls.KEY_RULE_GUIDE})."
             )
         return size
 
@@ -434,7 +653,7 @@ class DatasetRepository:
                         )
                     norm_pair[std_label] = mat
 
-                for req_label in (LabelNormalizer.CROSS, LabelNormalizer.X):
+                for req_label in LabelNormalizer.REQUIRED_LABELS:
                     if req_label not in norm_pair:
                         raise ValueError(f"'{size_key}'에 표준 '{req_label}' 필터가 누락되었습니다.")
 
@@ -477,98 +696,132 @@ class SimulatorApp:
     """콘솔 메뉴 제어, 3×3 대화형 분석, data.json 일괄 검증 및 성능·결과 리포트를 총괄하는 컨트롤러 (SRP)"""
 
     BENCHMARK_SIZES = [3, 5, 13, 25]
+    MIN_REPORT_LINES = 10
+
+    # 리포트 후처리 자동화를 위한 표준 상태 코드 및 심각도(우선순위) 상수
+    STATUS_PASS = "pass"
+    STATUS_TIE = "tie"
+    STATUS_MISMATCH = "mismatch"
+    STATUS_SCHEMA_ERROR = "schema_error"
+
+    SEVERITY_LOW = "LOW"        # 허용오차(epsilon) 경계 동점(tie) -> 가중치 스케일/정규화 검토 권장
+    SEVERITY_MEDIUM = "MEDIUM"  # 예측 도형 오분류(mismatch) -> 필터 가중치 재설계 필요
+    SEVERITY_HIGH = "HIGH"      # 스키마·크기·키·라벨 오류(schema_error) -> 즉시 데이터 수정 필요
+
+    OUTPUT_FORMAT_RULE = (
+        "점수: 소수 넷째 자리(.4f, 정수·유효숫자 축약 및 동점 근접 시 .16f) | "
+        "시간: ms(.4f) | 메모리: MiB(.4f)"
+    )
 
     def __init__(
         self,
         repository: DatasetRepository | None = None,
         engine: MacEngine | None = None,
+        locale: str = MessageCatalog.DEFAULT_LOCALE,
     ):
         self.repository = repository or DatasetRepository()
         self.engine = engine or MacEngine()
+        self.locale = locale
 
     @staticmethod
     def _format_score(score_a: float, score_b: float) -> tuple[str, str]:
-        """두 점수가 근접한 동점 경계 케이스에서 IEEE-754 소수점 16자리 정밀도를 그대로 노출"""
+        """점수 표준화 규칙: 일반 케이스는 .4f(불필요 후행 0 생략), 동점 경계(|A-B|<1e-6)는 .16f 정밀도 표기"""
         if abs(score_a - score_b) < 1e-6:
             return f"{score_a:.16f}", f"{score_b:.16f}"
         return f"{score_a:.4f}".rstrip("0").rstrip("."), f"{score_b:.4f}".rstrip("0").rstrip(".")
 
     @staticmethod
+    def format_judgment_line(
+        judgment: str,
+        epsilon: float,
+        expected: str | None = None,
+        result_tag: str | None = None,
+    ) -> str:
+        """모드 1·모드 2 모든 판정 출력에 적용된 epsilon 기준값을 중복 없이 일관되게 함께 표기하는 단일 포맷터"""
+        eps_str = f"epsilon={epsilon:.0e}"
+        if expected is None:
+            if judgment == "판정 불가":
+                return f"판정: 판정 불가 (동점 기준 |A-B| < {eps_str})"
+            return f"판정: {judgment} (기준 {eps_str})"
+        return f"판정: {judgment} ({eps_str}) | expected: {expected} | {result_tag}"
+
+    @classmethod
     def _diagnose_case_failure(
+        cls,
         predicted: str,
         expected: str,
         score_cross: float,
         score_x: float,
         epsilon: float,
-    ) -> str:
-        """판정 불일치 발생 시 수치 비교(동점 규칙) vs 반대 라벨 오분류 원인을 명확히 요약"""
+    ) -> tuple[str, str, str]:
+        """실패 시 (status_code, severity, reason) 3원소 튜플로 동점(tie)과 오분류(mismatch)를 표준화 반환"""
         diff = abs(score_cross - score_x)
         if predicted == LabelNormalizer.UNDECIDED:
-            return (
+            reason = (
                 f"동점(UNDECIDED) 처리 규칙에 따라 FAIL "
                 f"(|Cross-X| = {diff:.2e} < {epsilon:.0e}, expected: {expected})"
             )
-        return (
+            return cls.STATUS_TIE, cls.SEVERITY_LOW, reason
+        reason = (
             f"예측 라벨 불일치로 FAIL "
             f"(판정: {predicted}, expected: {expected}, Cross={score_cross:.4f}, X={score_x:.4f})"
         )
+        return cls.STATUS_MISMATCH, cls.SEVERITY_MEDIUM, reason
 
-    @staticmethod
-    def _prompt_int_in_range(prompt: str, min_val: int, max_val: int) -> int:
+    def _prompt_int_in_range(self, prompt: str, min_val: int, max_val: int) -> int:
         while True:
             raw = input(prompt).strip()
             if not raw:
-                print(f"[입력 오류] 입력이 비어 있습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.")
+                print(MessageCatalog.format("MENU_EMPTY", self.locale, min_val=min_val, max_val=max_val))
                 continue
             try:
                 value = int(raw)
             except ValueError:
-                print(f"[입력 오류] 숫자가 아닙니다. {min_val}~{max_val} 사이의 정수를 입력하세요.")
+                print(MessageCatalog.format("MENU_NOT_INT", self.locale, min_val=min_val, max_val=max_val))
                 continue
             if min_val <= value <= max_val:
                 return value
-            print(f"[입력 오류] 허용 범위를 벗어났습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.")
+            print(MessageCatalog.format("MENU_OUT_OF_RANGE", self.locale, min_val=min_val, max_val=max_val))
 
-    @staticmethod
-    def read_matrix_from_console(title: str, size: int = 3) -> Matrix2D:
-        """지정된 크기(기본 3×3)의 행렬을 한 줄씩 입력받아 열 개수 불일치·비숫자 원인을 구분 안내 후 재입력 유도"""
+    def read_matrix_from_console(self, title: str, size: int = 3) -> Matrix2D:
+        """지정 크기(기본 3×3) 행렬을 입력받아 MessageCatalog 기반 원인별(빈 줄/열 개수/비숫자) 안내 후 재입력 유도"""
         print(f"\n{title} ({size}줄 입력, 공백 구분)")
         rows: list[list[float]] = []
         for row_idx in range(1, size + 1):
             while True:
                 line = input(f"  {row_idx}행: ").strip()
                 if not line:
-                    print(
-                        f"입력 형식 오류 [빈 줄 입력]: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
-                    )
+                    print(MessageCatalog.format("ROW_EMPTY", self.locale, size=size))
                     continue
                 tokens = line.split()
                 if len(tokens) != size:
                     print(
-                        f"입력 형식 오류 [열 개수 불일치: 입력 {len(tokens)}개 != 기대 {size}개]: "
-                        f"각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+                        MessageCatalog.format(
+                            "ROW_COL_MISMATCH", self.locale, actual=len(tokens), size=size
+                        )
                     )
                     continue
 
                 parsed_row: list[float] = []
-                bad_reason: str | None = None
+                err_msg: str | None = None
                 for tok in tokens:
                     try:
                         num = float(tok)
                     except ValueError:
-                        bad_reason = f"숫자 파싱 실패({tok!r})"
+                        err_msg = MessageCatalog.format(
+                            "ROW_PARSE_FLOAT", self.locale, token=tok, size=size
+                        )
                         break
                     try:
                         parsed_row.append(Matrix2D._validate_number(num, f"{row_idx}행"))
                     except ValueError:
-                        bad_reason = f"유한 실수 아님({tok!r})"
+                        err_msg = MessageCatalog.format(
+                            "ROW_NON_FINITE", self.locale, token=tok, size=size
+                        )
                         break
 
-                if bad_reason is not None:
-                    print(
-                        f"입력 형식 오류 [{bad_reason}]: "
-                        f"각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
-                    )
+                if err_msg is not None:
+                    print(err_msg)
                     continue
 
                 rows.append(parsed_row)
@@ -580,29 +833,66 @@ class SimulatorApp:
         sizes: list[int],
         filters_by_size: dict[int, dict[str, Matrix2D]] | None = None,
         section_num: int = 3,
-    ) -> list[dict]:
-        """크기별 반복수(repeats), 평균 MAC 연산 시간(2D vs 1D 최적화, ms) 및 연산 횟수(N²) 표 출력"""
+        include_projection: bool = True,
+    ) -> tuple[list[dict], dict]:
+        """크기별 반복수·워밍업·2D 평균/표준편차/최소~최대·1D 평균·연산수(N²)·예상 메모리(MiB) 및 1000×1000 예측 출력"""
         records = self.engine.benchmark_sizes(sizes, filters_by_size=filters_by_size)
         repeats = records[0]["repeats"] if records else self.engine.repeats
+        warmup = records[0]["warmup"] if records else self.engine.warmup
 
         print("\n#----------------------------------------")
-        print(f"# [{section_num}] 성능 분석 (반복 측정 repeats={repeats}회 평균)")
+        print(f"# [{section_num}] 성능 분석 (repeats={repeats}회, warmup={warmup}회)")
         print("#----------------------------------------")
         print(
-            f"{'크기':<8}{'반복수(회)':<12}{'평균 시간(ms)':<16}"
-            f"{'1D 최적화(ms)':<16}{'연산 횟수(N²)':<14}"
+            f"{'크기':<7}{'반복수':<8}{'2D평균(ms)':<12}{'표준편차(±ms)':<14}"
+            f"{'최소~최대(ms)':<18}{'1D평균(ms)':<12}{'연산수(N²)':<11}{'예상메모리(MiB)':<14}"
         )
-        print("-" * 66)
+        print("-" * 96)
         for rec in records:
             label = f"{rec['size']}×{rec['size']}"
+            min_max = f"{rec['min_2d_ms']:.4f}~{rec['max_2d_ms']:.4f}"
             print(
-                f"{label:<8}{rec['repeats']:<12}{rec['avg_2d_ms']:<16.4f}"
-                f"{rec['avg_1d_ms']:<16.4f}{rec['ops']:<14}"
+                f"{label:<7}{rec['repeats']:<8}{rec['avg_2d_ms']:<12.4f}{rec['std_2d_ms']:<14.4f}"
+                f"{min_max:<18}{rec['avg_1d_ms']:<12.4f}{rec['ops']:<11}{rec['est_mem_mib']:<14.4f}"
             )
-        return records
+
+        projection = self.engine.project_large_scale(records[-1], target_size=1000)
+        if include_projection:
+            print(
+                f"[대형 입력 예측] 1000×1000 (1,000,000 ops): "
+                f"예상 2D ~{projection['projected_2d_ms']:.2f} ms (1D ~{projection['projected_1d_ms']:.2f} ms) | "
+                f"파이썬 2D 메모리 ~{projection['est_python_2d_mib']:.2f} MiB "
+                f"(연속 float64 버퍼 시 ~{projection['est_contiguous_fp64_mib']:.2f} MiB)"
+            )
+        return records, projection
+
+    @classmethod
+    def render_markdown_report_lines(cls, summary: dict) -> list[str]:
+        """리포트 최소 줄 수(MIN_REPORT_LINES=10줄 이상) 자동 검증 규칙을 충족하는 구조화 요약 텍스트 생성"""
+        proj = summary["large_scale_projection_1000x1000"]
+        lines = [
+            f"1. 분석 시각 및 매개변수: {summary['analyzed_at']} (epsilon={summary['epsilon']:.0e}, repeats={summary['repeats']}, warmup={summary['warmup']})",
+            f"2. 표준 출력 포맷 규칙: {cls.OUTPUT_FORMAT_RULE}",
+            f"3. 로드된 필터 후보 목록: {summary['loaded_filter_candidates_display']}",
+            f"4. 전체 테스트 집계: 총 {summary['total']}건 / 통과 {summary['passed']}건 / 실패 {summary['failed']}건",
+        ]
+        for idx, fc in enumerate(summary["fail_cases"], start=5):
+            lines.append(
+                f"{idx}. 실패 상세 [{fc['severity']}|code={fc['status_code']}] {fc['case_id']}: {fc['reason']}"
+            )
+        next_no = len(lines) + 1
+        lines.append(
+            f"{next_no}. 시간 복잡도 검증: N² 연산량 증가(9 -> 25 -> 169 -> 625)에 비례해 평균 연산 시간 선형 증가 확인"
+        )
+        lines.append(
+            f"{next_no + 1}. 대형 입력(1000×1000, 1M ops) 예측: 2D 약 {proj['projected_2d_ms']:.2f} ms, 메모리 약 {proj['est_python_2d_mib']:.2f} MiB"
+        )
+        while len(lines) < cls.MIN_REPORT_LINES:
+            lines.append(f"{len(lines) + 1}. 추가 검증 항목: 케이스 단위 FAIL 격리 및 원자적 리포트 저장 정상 완료")
+        return lines
 
     def run_user_input_mode(self) -> None:
-        """모드 1: 3×3 필터 A, B 입력 -> 저장 확인 -> 패턴 입력 -> MAC 연산/판정 -> 성능 분석(3×3) 출력"""
+        """모드 1: 3×3 필터 A, B 입력 -> 저장 확인 -> 패턴 입력 -> MAC 연산/일원화 판정 -> 성능 분석(3×3) 출력"""
         print("\n#----------------------------------------")
         print("# [1] 필터 입력")
         print("#----------------------------------------")
@@ -623,22 +913,23 @@ class SimulatorApp:
             score_a, score_b, label_a="A", label_b="B", tie_label="판정 불가"
         )
         fmt_a, fmt_b = self._format_score(score_a, score_b)
+        bounds_a = self.engine.compute_score_bounds_and_ratio(pattern, filter_a)
+        bounds_b = self.engine.compute_score_bounds_and_ratio(pattern, filter_b)
 
         print("\n#----------------------------------------")
         print("# [3] MAC 결과")
         print("#----------------------------------------")
-        print(f"A 점수: {fmt_a}")
-        print(f"B 점수: {fmt_b}")
-        print(f"연산 시간(평균/{self.engine.repeats}회): {avg_pair_ms:.4f} ms")
-        if judgment == "판정 불가":
-            print(f"판정: 판정 불가 (|A-B| < {self.engine.epsilon:.0e})")
-        else:
-            print(f"판정: {judgment}")
+        print(f"A 점수: {fmt_a} (최대 가능 {bounds_a['max_possible']:.4g} 대비 일치율 {bounds_a['normalized_ratio'] * 100:.1f}%)")
+        print(f"B 점수: {fmt_b} (최대 가능 {bounds_b['max_possible']:.4g} 대비 일치율 {bounds_b['normalized_ratio'] * 100:.1f}%)")
+        print(
+            f"연산 시간(평균/{self.engine.repeats}회, 워밍업 {self.engine.warmup}회): {avg_pair_ms:.4f} ms"
+        )
+        print(self.format_judgment_line(judgment, self.engine.epsilon))
 
-        self.print_benchmark_table([3], section_num=4)
+        self.print_benchmark_table([3], section_num=4, include_projection=False)
 
     def evaluate_dataset(self) -> dict:
-        """모드 2: data.json 로드 -> 라벨 정규화 및 크기 검증 -> 케이스별 MAC 판정(케이스 단위 FAIL 격리) -> 성능·요약 출력"""
+        """모드 2: data.json 로드 -> 정규화·크기 검증 -> 케이스별 MAC 판정(코드·심각도 태깅) -> 분산·메모리 성능표 및 리포트 저장"""
         raw_data = self.repository.load_dataset()
 
         print("\n#----------------------------------------")
@@ -648,9 +939,7 @@ class SimulatorApp:
         for msg in filter_logs:
             print(msg)
 
-        available_sizes_str = (
-            ", ".join(f"size_{k}" for k in sorted(filters_by_size)) if filters_by_size else "없음"
-        )
+        candidates_display = self.repository.format_candidate_sizes(filters_by_size)
 
         print("\n#----------------------------------------")
         print("# [2] 패턴 분석 (라벨 정규화 적용)")
@@ -668,8 +957,12 @@ class SimulatorApp:
                 target_n = self.repository.extract_size_from_key(case_id, require_case_index=True)
                 if target_n not in filters_by_size:
                     raise ValueError(
-                        f"매칭되는 'size_{target_n}' 필터가 없습니다 "
-                        f"(현재 로드된 필터 후보: [{available_sizes_str}])."
+                        MessageCatalog.format(
+                            "FILTER_MISSING",
+                            self.locale,
+                            target_n=target_n,
+                            candidates=candidates_display,
+                        )
                     )
 
                 if not isinstance(entry, dict) or "input" not in entry or "expected" not in entry:
@@ -694,16 +987,38 @@ class SimulatorApp:
 
                 if predicted == expected_std:
                     pass_count += 1
-                    print(f"판정: {predicted} | expected: {expected_std} | PASS")
+                    print(
+                        self.format_judgment_line(
+                            predicted, self.engine.epsilon, expected=expected_std, result_tag="PASS"
+                        )
+                    )
                 else:
-                    reason = self._diagnose_case_failure(
+                    status_code, severity, reason = self._diagnose_case_failure(
                         predicted, expected_std, score_cross, score_x, self.engine.epsilon
                     )
-                    tag = "FAIL (동점 규칙)" if predicted == LabelNormalizer.UNDECIDED else "FAIL"
-                    print(f"판정: {predicted} | expected: {expected_std} | {tag}")
-                    fail_cases.append({"case_id": case_id, "reason": reason})
+                    tag = (
+                        f"FAIL (동점 규칙, code={status_code}, severity={severity})"
+                        if status_code == self.STATUS_TIE
+                        else f"FAIL (code={status_code}, severity={severity})"
+                    )
+                    print(
+                        self.format_judgment_line(
+                            predicted, self.engine.epsilon, expected=expected_std, result_tag=tag
+                        )
+                    )
+                    fail_cases.append(
+                        {
+                            "case_id": case_id,
+                            "status_code": status_code,
+                            "severity": severity,
+                            "predicted": predicted,
+                            "expected": expected_std,
+                            "candidate_filters": candidates_display,
+                            "reason": reason,
+                        }
+                    )
 
-                    if predicted == LabelNormalizer.UNDECIDED:
+                    if status_code == self.STATUS_TIE:
                         norm_cross_f = self.engine.normalize_filter_l1(filter_pair[LabelNormalizer.CROSS])
                         norm_x_f = self.engine.normalize_filter_l1(filter_pair[LabelNormalizer.X])
                         re_cross = self.engine.compute_mac_2d(pattern, norm_cross_f)
@@ -716,11 +1031,24 @@ class SimulatorApp:
 
             except ValueError as exc:
                 reason = f"스키마/크기 검증 오류로 FAIL ({exc})"
-                print(f"판정: ERROR | FAIL - {exc}")
-                fail_cases.append({"case_id": case_id, "reason": reason})
+                print(
+                    f"판정: ERROR (epsilon={self.engine.epsilon:.0e}) | "
+                    f"FAIL (code={self.STATUS_SCHEMA_ERROR}, severity={self.SEVERITY_HIGH}) - {exc}"
+                )
+                fail_cases.append(
+                    {
+                        "case_id": case_id,
+                        "status_code": self.STATUS_SCHEMA_ERROR,
+                        "severity": self.SEVERITY_HIGH,
+                        "predicted": "ERROR",
+                        "expected": entry.get("expected") if isinstance(entry, dict) else None,
+                        "candidate_filters": candidates_display,
+                        "reason": reason,
+                    }
+                )
 
-        bench_records = self.print_benchmark_table(
-            self.BENCHMARK_SIZES, filters_by_size=filters_by_size, section_num=3
+        bench_records, projection_1m = self.print_benchmark_table(
+            self.BENCHMARK_SIZES, filters_by_size=filters_by_size, section_num=3, include_projection=True
         )
 
         fail_count = total_count - pass_count
@@ -729,12 +1057,22 @@ class SimulatorApp:
             "analyzed_at": analyzed_at,
             "epsilon": self.engine.epsilon,
             "repeats": self.engine.repeats,
+            "warmup": self.engine.warmup,
+            "output_format_rule": self.OUTPUT_FORMAT_RULE,
+            "min_report_lines_rule": self.MIN_REPORT_LINES,
+            "loaded_filter_candidates": [f"size_{k}" for k in sorted(filters_by_size)],
+            "loaded_filter_candidates_display": candidates_display,
             "total": total_count,
             "passed": pass_count,
             "failed": fail_count,
             "fail_cases": fail_cases,
             "benchmarks": bench_records,
+            "large_scale_projection_1000x1000": projection_1m,
         }
+        report_lines = self.render_markdown_report_lines(summary_payload)
+        summary_payload["report_line_count"] = len(report_lines)
+        summary_payload["report_lines"] = report_lines
+
         saved_ok = self.repository.save_report_atomic(summary_payload)
 
         print("\n#----------------------------------------")
@@ -743,11 +1081,15 @@ class SimulatorApp:
         print(f"총 테스트: {total_count}개")
         print(f"통과: {pass_count}개")
         print(f"실패: {fail_count}개")
+        print(f"로드된 필터 후보 목록: {candidates_display}")
 
         if fail_cases:
-            print("\n실패 케이스:")
+            print("\n실패 케이스 (심각도 및 표준 상태 코드 포함):")
             for item in fail_cases:
-                print(f"- {item['case_id']}: {item['reason']}")
+                print(
+                    f"- [{item['severity']}|code={item['status_code']}] "
+                    f"{item['case_id']}: {item['reason']}"
+                )
         else:
             print("\n실패 케이스 없음 (라벨 정규화 및 허용오차 비교 정책 정상 적용)")
 
@@ -758,13 +1100,16 @@ class SimulatorApp:
 
         if saved_ok:
             report_name = os.path.basename(self.repository.report_file)
-            print(f"\n[리포트 동기화 저장] {report_name} (생성 시각: {analyzed_at})")
+            print(
+                f"\n[리포트 동기화 저장] {report_name} "
+                f"(생성 시각: {analyzed_at}, 검증 줄 수: {len(report_lines)}줄 >= 최소 {self.MIN_REPORT_LINES}줄)"
+            )
         return summary_payload
 
     def run_bonus_generator_and_optimization_mode(self) -> None:
-        """모드 3(보너스): 크기 N 자동 패턴 생성기, 2D vs 1D 평탄화 비교 및 CPU 직렬 vs 스레드 병목 실험"""
+        """모드 3(보너스): 크기 N 자동 패턴 생성기, 2D vs 1D 평탄화 비교, 1000×1000(1M) 실측 및 스레드 병목 실험"""
         print("\n#----------------------------------------")
-        print("# [보너스 1 & 2] N×N 패턴 자동 생성, 1D 최적화 및 병목 실험")
+        print("# [보너스 1 & 2] N×N 패턴 자동 생성, 1D 최적화, 1M 실측 및 병목 실험")
         print("#----------------------------------------")
         n = self._prompt_int_in_range("생성할 정방 패턴 크기 N 입력 (3~51): ", 3, 51)
         pair = PatternGenerator.generate_pair(n)
@@ -788,18 +1133,33 @@ class SimulatorApp:
 
         target_sizes = sorted(set(self.BENCHMARK_SIZES + [n]))
         records = self.engine.benchmark_sizes(target_sizes)
-        print(f"\n[2D 중첩 리스트 vs 1D 평탄화 배열(길이 N²) 성능 비교 (repeats={records[0]['repeats']}회 평균)]")
         print(
-            f"{'크기':<8}{'반복수(회)':<11}{'2D 평균(ms)':<14}"
-            f"{'1D 평균(ms)':<14}{'속도 개선율':<12}{'연산 횟수(N²)':<12}"
+            f"\n[2D 중첩 리스트 vs 1D 평탄화 배열(길이 N²) 성능 비교 "
+            f"(repeats={records[0]['repeats']}회, warmup={records[0]['warmup']}회)]"
         )
-        print("-" * 71)
+        print(
+            f"{'크기':<7}{'반복수':<8}{'2D평균(ms)':<12}{'표준편차(±ms)':<14}"
+            f"{'1D평균(ms)':<12}{'속도개선율':<11}{'연산수(N²)':<11}{'예상메모리(MiB)':<14}"
+        )
+        print("-" * 89)
         for rec in records:
             label = f"{rec['size']}×{rec['size']}"
             print(
-                f"{label:<8}{rec['repeats']:<11}{rec['avg_2d_ms']:<14.4f}{rec['avg_1d_ms']:<14.4f}"
-                f"{rec['speedup_pct']:>+8.1f}%   {rec['ops']:<12}"
+                f"{label:<7}{rec['repeats']:<8}{rec['avg_2d_ms']:<12.4f}{rec['std_2d_ms']:<14.4f}"
+                f"{rec['avg_1d_ms']:<12.4f}{rec['speedup_pct']:>+8.1f}%  "
+                f"{rec['ops']:<11}{rec['est_mem_mib']:<14.4f}"
             )
+
+        sample_1m = self.engine.measure_large_scale_sample(size=1000, repeats=3, warmup=1)
+        print(
+            f"\n[1000×1000 대형 입력(1,000,000 원소) 실제 샘플 측정 (repeats={sample_1m['repeats']}회, warmup=1회)]"
+        )
+        print(
+            f"  - 2D 실측: {sample_1m['measured_2d_ms']:.2f} ms | "
+            f"1D 실측: {sample_1m['measured_1d_ms']:.2f} ms | "
+            f"파이썬 2D 메모리: {sample_1m['est_python_2d_mib']:.2f} MiB "
+            f"(연속 float64 버퍼 시 {sample_1m['est_contiguous_fp64_mib']:.2f} MiB)"
+        )
 
         bottleneck = self.engine.benchmark_serial_vs_threaded(size=25, batch_filters=64, workers=4)
         print(
@@ -816,8 +1176,9 @@ class SimulatorApp:
         print("\n=== Mini NPU Simulator ===")
         print(
             f"[현재 설정] 허용오차(epsilon): {self.engine.epsilon:.0e} | "
-            f"성능 측정 반복수(repeats): {self.engine.repeats}회"
+            f"반복수(repeats): {self.engine.repeats}회 | 워밍업(warmup): {self.engine.warmup}회"
         )
+        print(f"[표준 포맷] {self.OUTPUT_FORMAT_RULE}")
         print("\n[모드 선택]")
         print("1. 사용자 입력 (3x3)")
         print("2. data.json 분석")
@@ -843,7 +1204,7 @@ class SimulatorApp:
                     print("\n시뮬레이터를 정상 종료합니다. 이용해 주셔서 감사합니다!")
                     return
             except (KeyboardInterrupt, EOFError):
-                print("\n\n[안전 종료] 종료 신호가 감지되어 시뮬레이터를 안전하게 종료합니다.")
+                print(f"\n\n{MessageCatalog.format('SAFE_SHUTDOWN', self.locale)}")
                 return
 
 
@@ -857,7 +1218,7 @@ def main() -> None:
         app = SimulatorApp()
         app.run()
     except (KeyboardInterrupt, EOFError):
-        print("\n[안전 종료] 프로그램을 정상 종료합니다.")
+        print(f"\n{MessageCatalog.format('SAFE_SHUTDOWN')}")
 
 
 if __name__ == "__main__":

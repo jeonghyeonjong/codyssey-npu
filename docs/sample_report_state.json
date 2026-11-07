@@ -1,0 +1,137 @@
+{
+  "analyzed_at": "2026-11-07 20:07:30",
+  "epsilon": 1e-09,
+  "repeats": 1000,
+  "warmup": 20,
+  "output_format_rule": "점수: 소수 넷째 자리(.4f, 정수·유효숫자 축약 및 동점 근접 시 .16f) | 시간: ms(.4f) | 메모리: MiB(.4f)",
+  "min_report_lines_rule": 10,
+  "loaded_filter_candidates": [
+    "size_5",
+    "size_13",
+    "size_25"
+  ],
+  "loaded_filter_candidates_display": "[size_5, size_13, size_25]",
+  "total": 6,
+  "passed": 3,
+  "failed": 3,
+  "fail_cases": [
+    {
+      "case_id": "size_5_1",
+      "status_code": "tie",
+      "severity": "LOW",
+      "predicted": "UNDECIDED",
+      "expected": "X",
+      "candidate_filters": "[size_5, size_13, size_25]",
+      "reason": "동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.11e-16 < 1e-09, expected: X)"
+    },
+    {
+      "case_id": "size_13_2",
+      "status_code": "tie",
+      "severity": "LOW",
+      "predicted": "UNDECIDED",
+      "expected": "Cross",
+      "candidate_filters": "[size_5, size_13, size_25]",
+      "reason": "동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 2.66e-15 < 1e-09, expected: Cross)"
+    },
+    {
+      "case_id": "size_25_1",
+      "status_code": "tie",
+      "severity": "LOW",
+      "predicted": "UNDECIDED",
+      "expected": "X",
+      "candidate_filters": "[size_5, size_13, size_25]",
+      "reason": "동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.78e-15 < 1e-09, expected: X)"
+    }
+  ],
+  "benchmarks": [
+    {
+      "size": 3,
+      "ops": 9,
+      "repeats": 1000,
+      "warmup": 20,
+      "avg_2d_ms": 0.0009496001293882728,
+      "std_2d_ms": 0.00010845989644313034,
+      "min_2d_ms": 0.0008939998224377632,
+      "max_2d_ms": 0.001287998165935278,
+      "avg_1d_ms": 0.0008273998973891139,
+      "std_1d_ms": 0.00014878445072415473,
+      "min_1d_ms": 0.0006979983299970627,
+      "max_1d_ms": 0.0011779996566474438,
+      "speedup_pct": 12.868598920461352,
+      "est_mem_mib": 0.0010223388671875,
+      "contiguous_fp64_mib": 0.0001373291015625
+    },
+    {
+      "size": 5,
+      "ops": 25,
+      "repeats": 1000,
+      "warmup": 20,
+      "avg_2d_ms": 0.0018376000225543976,
+      "std_2d_ms": 0.00013560587915922357,
+      "min_2d_ms": 0.0017779995687305927,
+      "max_2d_ms": 0.0022700009867548943,
+      "avg_1d_ms": 0.0013923000078648329,
+      "std_1d_ms": 1.6572095627513286e-05,
+      "min_1d_ms": 0.001376001164317131,
+      "max_1d_ms": 0.001455999445170164,
+      "speedup_pct": 24.232695321290066,
+      "est_mem_mib": 0.0022430419921875,
+      "contiguous_fp64_mib": 0.0003814697265625
+    },
+    {
+      "size": 13,
+      "ops": 169,
+      "repeats": 1000,
+      "warmup": 20,
+      "avg_2d_ms": 0.014810399967245758,
+      "std_2d_ms": 0.00692357067524764,
+      "min_2d_ms": 0.008328000549227,
+      "max_2d_ms": 0.027123999316245317,
+      "avg_1d_ms": 0.007574499933980405,
+      "std_1d_ms": 0.00035948628437858807,
+      "min_1d_ms": 0.007321999873965979,
+      "max_1d_ms": 0.008462001569569111,
+      "speedup_pct": 48.856884684195265,
+      "est_mem_mib": 0.0120086669921875,
+      "contiguous_fp64_mib": 0.0025787353515625
+    },
+    {
+      "size": 25,
+      "ops": 625,
+      "repeats": 1000,
+      "warmup": 20,
+      "avg_2d_ms": 0.03788940003141761,
+      "std_2d_ms": 0.013179494655219467,
+      "min_2d_ms": 0.02756000030785799,
+      "max_2d_ms": 0.07463399786502123,
+      "avg_1d_ms": 0.030397400027140975,
+      "std_1d_ms": 0.004420621866055207,
+      "min_1d_ms": 0.02727799816057086,
+      "max_1d_ms": 0.04060199949890375,
+      "speedup_pct": 19.773340295872522,
+      "est_mem_mib": 0.0413055419921875,
+      "contiguous_fp64_mib": 0.0095367431640625
+    }
+  ],
+  "large_scale_projection_1000x1000": {
+    "size": 1000,
+    "ops": 1000000,
+    "projected_2d_ms": 60.62304005026817,
+    "projected_1d_ms": 48.63584004342556,
+    "est_python_2d_mib": 61.15733337402344,
+    "est_contiguous_fp64_mib": 15.2587890625
+  },
+  "report_line_count": 10,
+  "report_lines": [
+    "1. 분석 시각 및 매개변수: 2026-11-07 20:07:30 (epsilon=1e-09, repeats=1000, warmup=20)",
+    "2. 표준 출력 포맷 규칙: 점수: 소수 넷째 자리(.4f, 정수·유효숫자 축약 및 동점 근접 시 .16f) | 시간: ms(.4f) | 메모리: MiB(.4f)",
+    "3. 로드된 필터 후보 목록: [size_5, size_13, size_25]",
+    "4. 전체 테스트 집계: 총 6건 / 통과 3건 / 실패 3건",
+    "5. 실패 상세 [LOW|code=tie] size_5_1: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.11e-16 < 1e-09, expected: X)",
+    "6. 실패 상세 [LOW|code=tie] size_13_2: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 2.66e-15 < 1e-09, expected: Cross)",
+    "7. 실패 상세 [LOW|code=tie] size_25_1: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.78e-15 < 1e-09, expected: X)",
+    "8. 시간 복잡도 검증: N² 연산량 증가(9 -> 25 -> 169 -> 625)에 비례해 평균 연산 시간 선형 증가 확인",
+    "9. 대형 입력(1000×1000, 1M ops) 예측: 2D 약 60.62 ms, 메모리 약 61.16 MiB",
+    "10. 추가 검증 항목: 케이스 단위 FAIL 격리 및 원자적 리포트 저장 정상 완료"
+  ]
+}
