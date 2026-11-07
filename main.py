@@ -78,3 +78,27 @@ class Matrix2D:
         return "\n".join(lines)
 
 
+class LabelNormalizer:
+    """외부 JSON 키 및 expected 표기를 내부 표준 라벨(Cross, X)로 일관되게 정규화하는 클래스 (SRP)"""
+
+    CROSS = "Cross"
+    X = "X"
+    UNDECIDED = "UNDECIDED"
+
+    _LABEL_MAP = {
+        "+": CROSS,
+        "cross": CROSS,
+        "x": X,
+    }
+
+    @classmethod
+    def normalize(cls, raw_label: str) -> str:
+        """'+'/'cross' -> 'Cross', 'x' -> 'X' 표준 라벨 변환 (대소문자·공백 무시)"""
+        if not isinstance(raw_label, str) or not raw_label.strip():
+            raise ValueError("라벨 값이 비어 있거나 문자열이 아닙니다.")
+        key = raw_label.strip().lower()
+        if key not in cls._LABEL_MAP:
+            raise ValueError(f"알 수 없는 비표준 라벨입니다: {raw_label!r} (허용: '+', 'cross', 'x')")
+        return cls._LABEL_MAP[key]
+
+
