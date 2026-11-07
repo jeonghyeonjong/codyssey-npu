@@ -1,0 +1,14 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Atomic serialization & recovery artifacts
+*.tmp
+*.corrupt
+*.bak
+report_state.json
