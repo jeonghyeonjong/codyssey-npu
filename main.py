@@ -102,3 +102,34 @@ class LabelNormalizer:
         return cls._LABEL_MAP[key]
 
 
+class MacEngine:
+    """외부 라이브러리 없이 순수 반복문 기반 MAC(Multiply-Accumulate) 연산을 수행하는 코어 엔진 (SRP)"""
+
+    DEFAULT_EPSILON = 1e-9
+    DEFAULT_REPEATS = 1000
+
+    def __init__(self, epsilon: float = DEFAULT_EPSILON):
+        if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)) or epsilon <= 0:
+            raise ValueError("허용오차(epsilon)는 0보다 큰 양수여야 합니다.")
+        self.epsilon = float(epsilon)
+
+    @staticmethod
+    def compute_mac_2d(pattern: Matrix2D, filter_mat: Matrix2D) -> float:
+        """2차원 중첩 반복문으로 같은 위치 원소끼리 곱해 누적 합산(MAC) 점수 반환"""
+        if pattern.size != filter_mat.size:
+            raise ValueError(
+                f"패턴 크기({pattern.size}×{pattern.size})와 "
+                f"필터 크기({filter_mat.size}×{filter_mat.size})가 일치하지 않습니다."
+            )
+        n = pattern.size
+        p_grid = pattern._grid
+        f_grid = filter_mat._grid
+        total = 0.0
+        for r in range(n):
+            p_row = p_grid[r]
+            f_row = f_grid[r]
+            for c in range(n):
+                total += p_row[c] * f_row[c]
+        return total
+
+
