@@ -140,7 +140,9 @@
 | **`1e-4` (중간 확대)** | `UNDECIDED` (`code=tie`) | `UNDECIDED` (**미세 차이 동점화**) | `Cross` (`PASS`) | 소수 다섯째 자리 이하 미세 가중치 차이를 동점으로 둔감화 |
 | **`10.0` (과대)** | `UNDECIDED` (`code=tie`) | `UNDECIDED` (`code=tie`) | `UNDECIDED` (**정상 케이스까지 실패**) | 정상 패턴 차이(`8.8`)까지 모두 동점으로 뭉개져 판별력 상실 |
 
-### 5) 워밍업(`warmup`) 옵션 및 순수 연산 측정 경계
+- **실무 `epsilon` 3단계 튜닝 워크플로우**: ① 최대 행렬 연산수($N^2$)와 가중치 스케일 기준 반올림 오차 상한($\epsilon_{\text{noise}} \approx N^2 \cdot 10^{-16} \cdot \max|F|$) 산출 → ② 데이터셋 내 서로 다른 도형 간 최소 유효 점수 격차($\Delta_{\min}$) 확인 → ③ 두 경계 사이 안전 구간($\epsilon_{\text{noise}} \ll \text{epsilon} \ll \Delta_{\min}$, 기본값 `1e-9`)으로 설정 후 모드 2의 `undecided_rate_pct`로 검증합니다.
+
+### 5) 워밍업(`warmup`) 옵션, I/O 제외 규정 및 `tracemalloc` 메모리 측정 경계
 
 - **워밍업(`warmup=20` 기본값, `0` 이상 옵션 지정 가능)**: Python 3.11+ 적응형 인터프리터의 바이트코드 특수화(PEP 659) 및 CPU 캐시 초기 미스 비용이 첫 표본을 왜곡하지 않도록 `time.perf_counter()` 시작 전에 `warmup` 횟수만큼 사전 예열 루프를 수행합니다.
 - **포함·제외 경계**: 파일·콘솔 I/O, `Matrix2D` 생성 및 `to_flat_list()` 변환 비용, `warmup` 예열 구간은 모두 측정 시간에서 **제외**하며, 오직 `20개 표본 블록 × 50회 = 1000회`(`repeats`) 순수 `compute_mac_2d` / `compute_mac_1d` 호출 시간만 측정해 평균·표본 표준편차(`±ms`)·최소~최대 범위를 산출합니다.
@@ -149,7 +151,7 @@
 
 ## 5. 모드별 실제 실행 로그 및 증빙 이미지
 
-### 1) 모드 1: 원인별 오류 안내, 정규화 일치율, `epsilon` 일원화 판정 및 `3×3` 성능 표
+### 1) 모드 1: 원인별 오류 안내(입력 예시 포함), 일치율, `epsilon` 일원화 판정 및 `ns/op` 성능 표
 
     $ python main.py
     === Mini NPU Simulator ===
@@ -169,9 +171,9 @@
 
     필터 A (3줄 입력, 공백 구분)
       1행: 0 1
-    입력 형식 오류 [열 개수 불일치: 입력 2개 != 기대 3개]: 각 줄에 3개의 숫자를 공백으로 구분해 입력하세요.
+    입력 형식 오류 [열 개수 불일치: 입력 2개 != 기대 3개]: 각 줄에 3개의 숫자를 공백으로 구분해 입력하세요 (예: '0 1 0').
       1행: 0 a 0
-    입력 형식 오류 [숫자 파싱 실패('a')]: 각 줄에 3개의 숫자를 공백으로 구분해 입력하세요.
+    입력 형식 오류 [숫자 파싱 실패('a')]: 각 줄에 3개의 숫자를 공백으로 구분해 입력하세요 (예: '0 1 0').
       1행: 0 1 0
       2행: 1 1 1
       3행: 0 1 0
@@ -197,19 +199,21 @@
     #----------------------------------------
     A 점수: 1 (최대 가능 5 대비 일치율 20.0%)
     B 점수: 5 (최대 가능 5 대비 일치율 100.0%)
-    연산 시간(평균/1000회, 워밍업 20회): 0.0021 ms
+    연산 시간(평균/1000회, 워밍업 20회): 0.0018 ms
     판정: B (기준 epsilon=1e-09)
 
     #----------------------------------------
     # [4] 성능 분석 (repeats=1000회, warmup=20회)
     #----------------------------------------
-    크기     반복수     2D평균(ms)    표준편차(±ms)     최소~최대(ms)         1D평균(ms)    연산수(N²)    예상메모리(MiB)
-    ------------------------------------------------------------------------------------------------
-    3×3    1000    0.0011      0.0005        0.0009~0.0032     0.0008      9          0.0010
+    크기     반복수     2D평균(ms)    표준편차(±ms)     최소~최대(ms)         1D평균(ms)    연산수(N²)    단위시간(ns/op)     예상메모리(MiB)    
+    ----------------------------------------------------------------------------------------------------------------
+    3×3    1000    0.0009      0.0002        0.0009~0.0016     0.0007      9          104.6           0.0010
 
 ![Mode 1 Interactive Screenshot](docs/mode1_interactive.png)
 
-### 2) 모드 2: `data.json` 상태코드(`tie`)·심각도 태깅, 분산·메모리·`1M` 예측 및 리포트 저장
+- **모드 1 동점(`판정 불가`) 즉시 재현 케이스**: 동일한 십자가 필터 A(`0 1 0 / 1 1 1 / 0 1 0`)와 X 필터 B(`1 0 1 / 0 1 0 / 1 0 1`)에 중앙 점 패턴(`0 0 0 / 0 1 0 / 0 0 0`)을 입력하면 두 필터 모두 중앙 1칸만 일치해 `A 점수: 1`, `B 점수: 1`이 되며 `판정: 판정 불가 (동점 기준 |A-B| < epsilon=1e-09)`가 출력됩니다.
+
+### 2) 모드 2: `data.json` 상태코드(`tie`)·동점 빈도·참조 필터, `ns/op`·메모리 및 리포트 저장
 
     선택: 2
 
@@ -251,33 +255,33 @@
     #----------------------------------------
     # [3] 성능 분석 (repeats=1000회, warmup=20회)
     #----------------------------------------
-    크기     반복수     2D평균(ms)    표준편차(±ms)     최소~최대(ms)         1D평균(ms)    연산수(N²)    예상메모리(MiB)
-    ------------------------------------------------------------------------------------------------
-    3×3    1000    0.0009      0.0001        0.0009~0.0013     0.0008      9          0.0010
-    5×5    1000    0.0018      0.0001        0.0018~0.0023     0.0014      25         0.0022
-    13×13  1000    0.0148      0.0069        0.0083~0.0271     0.0076      169        0.0120
-    25×25  1000    0.0379      0.0132        0.0276~0.0746     0.0304      625        0.0413
-    [대형 입력 예측] 1000×1000 (1,000,000 ops): 예상 2D ~60.62 ms (1D ~48.64 ms) | 파이썬 2D 메모리 ~61.16 MiB (연속 float64 버퍼 시 ~15.26 MiB)
+    크기     반복수     2D평균(ms)    표준편차(±ms)     최소~최대(ms)         1D평균(ms)    연산수(N²)    단위시간(ns/op)     예상메모리(MiB)    
+    ----------------------------------------------------------------------------------------------------------------
+    3×3    1000    0.0011      0.0003        0.0009~0.0021     0.0009      9          123.1           0.0010        
+    5×5    1000    0.0022      0.0005        0.0018~0.0037     0.0015      25         86.7            0.0022        
+    13×13  1000    0.0154      0.0095        0.0085~0.0330     0.0102      169        90.9            0.0120        
+    25×25  1000    0.0572      0.0249        0.0289~0.0933     0.0525      625        91.5            0.0413        
+    [대형 입력 예측] 1000×1000 (1,000,000 ops): 예상 2D ~91.46 ms (1D ~84.04 ms) | 파이썬 2D 메모리 ~61.16 MiB (연속 float64 버퍼 시 ~15.26 MiB)
 
     #----------------------------------------
     # [4] 결과 요약
     #----------------------------------------
     총 테스트: 6개
     통과: 3개
-    실패: 3개
+    실패: 3개 (동점 UNDECIDED 빈도: 3개, 50.0%)
     로드된 필터 후보 목록: [size_5, size_13, size_25]
 
-    실패 케이스 (심각도 및 표준 상태 코드 포함):
-    - [LOW|code=tie] size_5_1: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.11e-16 < 1e-09, expected: X)
-    - [LOW|code=tie] size_13_2: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 2.66e-15 < 1e-09, expected: Cross)
-    - [LOW|code=tie] size_25_1: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.78e-15 < 1e-09, expected: X)
+    실패 케이스 (심각도·상태 코드 및 참조 필터 포함):
+    - [LOW|code=tie|filter=size_5] size_5_1: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.11e-16 < 1e-09, expected: X)
+    - [LOW|code=tie|filter=size_13] size_13_2: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 2.66e-15 < 1e-09, expected: Cross)
+    - [LOW|code=tie|filter=size_25] size_25_1: 동점(UNDECIDED) 처리 규칙에 따라 FAIL (|Cross-X| = 1.78e-15 < 1e-09, expected: X)
 
     [동점(UNDECIDED) 케이스 보조 재검증 — 필터 L1 가중치 정규화 시뮬레이션]
       * size_5_1: L1 가중치 합 정규화 시 Cross=0.1011, X=1.0000 -> X (expected: X)
       * size_13_2: L1 가중치 합 정규화 시 Cross=1.0000, X=0.5102 -> Cross (expected: Cross)
       * size_25_1: L1 가중치 합 정규화 시 Cross=0.0926, X=1.0000 -> X (expected: X)
 
-    [리포트 동기화 저장] report_state.json (생성 시각: 2026-11-07 20:07:30, 검증 줄 수: 10줄 >= 최소 10줄)
+    [리포트 동기화 저장] report_state.json (생성 시각: 2026-11-07 20:25:13, 검증 줄 수: 10줄 >= 최소 10줄)
 
 ![Mode 2 JSON Analysis Screenshot](docs/mode2_json_analysis.png)
 
@@ -285,13 +289,13 @@
 
 ![Error Isolation and Graceful Shutdown Screenshot](docs/error_isolation.png)
 
-### 4) 보너스 모드: `7×7` 자동 생성기, 1D 비교, `1000×1000`(`1M`) 실측 및 스레드 병목 실험
+### 4) 보너스 모드: `7×7` 자동 생성기, 1D 비교, `1000×1000`(`tracemalloc` 피크 힙) 실측 및 스레드 병목 실험
 
-    [1000×1000 대형 입력(1,000,000 원소) 실제 샘플 측정 (repeats=3회, warmup=1회)]
-      - 2D 실측: 50.00 ms | 1D 실측: 51.23 ms | 파이썬 2D 메모리: 61.16 MiB (연속 float64 버퍼 시 15.26 MiB)
+    [1000×1000 대형 입력(1,000,000 원소) 실제 샘플 측정 — time.perf_counter + tracemalloc]
+      - 2D 실측: 117.54 ms | 1D 실측: 69.97 ms | tracemalloc 피크 힙: 32.29 MiB (수식 추정 61.16 MiB / 연속 float64 버퍼 시 15.26 MiB)
 
     [CPU 직렬 vs 파이썬 다중 스레드(4스레드) 배치 병목 실험 (25×25 필터 64개, 총 40000회 MAC)]
-      - 단일 스레드 2D 직렬: 1.907 ms | 단일 스레드 1D 직렬: 1.814 ms | 4스레드(GIL 경합): 5.783 ms
+      - 단일 스레드 2D 직렬: 3.095 ms | 단일 스레드 1D 직렬: 1.973 ms | 4스레드(GIL 경합): 7.028 ms
 
 ![Bonus Pattern Generator and 1D Optimization Screenshot](docs/bonus_1d_generator.png)
 
@@ -343,7 +347,7 @@
 
 ### 4) 대형 입력 최적화 우선순위 및 CPU → SIMD(AVX) / GPU(Tensor Core) / NPU 하드웨어 전환 체크리스트
 
-- **단계별 최적화 우선순위**: ① 1D 연속 버퍼(`array('d')`) 전환 및 비영(Non-zero) 원소만 계산하는 희소(Sparse) MAC 적용 → ② C 레벨 AVX2/AVX-512 SIMD 벡터 내적 이관 → ③ GPU Tensor Core / NPU Systolic Array 하드웨어 오프로딩.
+- **단계별 최적화 우선순위 및 계량화된 예상 가속 배율 범위**: ① 파이썬 1D 연속 버퍼(`array('d')`) 및 희소(Sparse) MAC 전환(**메모리 약 `4×` 절감, 희소 패턴 연산 약 `1.3~10×` 단축**) → ② C 확장 기반 AVX2/AVX-512 SIMD 벡터 내적 이관(**인터프리터 루프 제거로 단일 코어 약 `20~50×` 가속**) → ③ GPU Tensor Core(`FP16`) / NPU Systolic Array(`INT8`) 배치 오프로딩(**다중 필터 대규모 배치 처리량 약 `500~1,000×+` 향상**).
 - **CPU → 전용 가속기(AVX / Tensor Core / NPU) 이식 시 필수 하드웨어 제약 체크리스트**:
   - [ ] **수치 정밀도 축소 및 양자화(Quantization) 오차**: Python `FP64`에서 Tensor Core `FP16`/`BF16` 또는 NPU `INT8`/`INT4`로 변환 시 동적 범위 클리핑과 양자화 계단 오차가 발생하므로, 스케일 팩터(Scale/Zero-point) 보정 및 동점 `epsilon` 임계값 재보정(`1e-9` → `1e-3` 등)이 필요합니다.
   - [ ] **메모리 정렬(Memory Alignment) 및 연속 스트라이드**: AVX-256/512 벡터 로드 및 NPU DMA 엔진은 포인터 리스트를 읽을 수 없으므로 32/64바이트 경계에 정렬된 연속 Row-major(또는 `NHWC`/`NCHW`) 텐서 버퍼로 직렬화해야 합니다.
@@ -362,11 +366,13 @@
 ![Git Clone and Pull Sync Screenshot](docs/git_clone_pull.png)
 
     $ git rev-list --count HEAD
-    18
+    20
 
     jeonghyeonjong@DESKTOP MINGW64 /c/codyssey-workspace/codyssey-npu (main)
     $ git log --oneline --graph
-    * (HEAD -> main, origin/main) docs: add format standardization, key fix matrix, hardware portability checklist, and PR template
+    * (HEAD -> main, origin/main) docs: add epsilon tuning workflow, Mode 1 tie recipe, and quantified accelerator speedups
+    * 460d93c feat: add ns/op metric, tracemalloc heap profiler, undecided stats, and 4-layer docstring
+    * 888dfbb docs: add format standardization, key fix matrix, hardware portability checklist, and PR template
     * a7621d7 feat: add MessageCatalog, warmup/stddev/MiB stats, tie status codes, and 1M MAC profiler
     * 70fa661 docs: enrich README and screenshots with format mapping, parameter guides, and O(N^2) ratios
     * fdef9a9 feat: enhance error diagnostics, repeats column, L1 tie recheck, and GIL benchmark
