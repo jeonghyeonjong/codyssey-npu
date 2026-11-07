@@ -1,3 +1,12 @@
+"""Mini NPU Simulator — 순수 파이썬 표준 라이브러리 기반 MAC 연산 및 패턴 판별 시뮬레이터
+
+[전체 아키텍처 4계층 구조 요약 (동료평가 브리핑용)]
+  1. 데이터·번역 계층 : Matrix2D(N×N 숫자 격자판), LabelNormalizer('+'/'cross' 표준화), MessageCatalog(다국어 안내 사전)
+  2. 순수 연산 계층   : MacEngine(행 우선 2D/1D MAC·epsilon 동점 판정·워밍업 벤치마크), PatternGenerator(N×N 패턴 생성)
+  3. 저장소 계층      : DatasetRepository(data.json 로드, size_N 키 추출, .bak 자동 복구, report_state.json 원자적 저장)
+  4. 제어·출력 계층   : SimulatorApp(모드 1 대화형·모드 2 일괄 검증·모드 3 최적화 실험 및 Ctrl+C 안전 종료)
+"""
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
@@ -6,6 +15,7 @@ import os
 import shutil
 import sys
 import time
+import tracemalloc
 
 
 class MessageCatalog:
@@ -18,18 +28,18 @@ class MessageCatalog:
             "MENU_EMPTY": "[입력 오류] 입력이 비어 있습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.",
             "MENU_NOT_INT": "[입력 오류] 숫자가 아닙니다. {min_val}~{max_val} 사이의 정수를 입력하세요.",
             "MENU_OUT_OF_RANGE": "[입력 오류] 허용 범위를 벗어났습니다. {min_val}~{max_val} 사이의 숫자를 입력하세요.",
-            "ROW_EMPTY": "입력 형식 오류 [빈 줄 입력]: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요.",
+            "ROW_EMPTY": "입력 형식 오류 [빈 줄 입력]: 각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요 (예: '0 1 0').",
             "ROW_COL_MISMATCH": (
                 "입력 형식 오류 [열 개수 불일치: 입력 {actual}개 != 기대 {size}개]: "
-                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요 (예: '0 1 0')."
             ),
             "ROW_PARSE_FLOAT": (
                 "입력 형식 오류 [숫자 파싱 실패({token!r})]: "
-                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요 (예: '0 1 0')."
             ),
             "ROW_NON_FINITE": (
                 "입력 형식 오류 [유한 실수 아님({token!r})]: "
-                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요."
+                "각 줄에 {size}개의 숫자를 공백으로 구분해 입력하세요 (예: '0 1 0')."
             ),
             "FILTER_MISSING": "매칭되는 'size_{target_n}' 필터가 없습니다 (로드된 필터 후보: {candidates}).",
             "SAFE_SHUTDOWN": "[안전 종료] 종료 신호가 감지되어 시뮬레이터를 안전하게 종료합니다.",
@@ -38,18 +48,18 @@ class MessageCatalog:
             "MENU_EMPTY": "[Input Error] Empty input. Enter an integer between {min_val} and {max_val}.",
             "MENU_NOT_INT": "[Input Error] Not an integer. Enter a number between {min_val} and {max_val}.",
             "MENU_OUT_OF_RANGE": "[Input Error] Out of range. Enter a number between {min_val} and {max_val}.",
-            "ROW_EMPTY": "Input format error [empty line]: enter {size} space-separated numbers per row.",
+            "ROW_EMPTY": "Input format error [empty line]: enter {size} space-separated numbers per row (e.g. '0 1 0').",
             "ROW_COL_MISMATCH": (
                 "Input format error [column mismatch: got {actual} != expected {size}]: "
-                "enter {size} space-separated numbers per row."
+                "enter {size} space-separated numbers per row (e.g. '0 1 0')."
             ),
             "ROW_PARSE_FLOAT": (
                 "Input format error [non-numeric token({token!r})]: "
-                "enter {size} space-separated numbers per row."
+                "enter {size} space-separated numbers per row (e.g. '0 1 0')."
             ),
             "ROW_NON_FINITE": (
                 "Input format error [non-finite float({token!r})]: "
-                "enter {size} space-separated numbers per row."
+                "enter {size} space-separated numbers per row (e.g. '0 1 0')."
             ),
             "FILTER_MISSING": "No matching 'size_{target_n}' filter found (loaded candidates: {candidates}).",
             "SAFE_SHUTDOWN": "[Graceful Shutdown] Termination signal detected; exiting safely.",
@@ -369,18 +379,21 @@ class MacEngine:
             avg_2d_ms, std_2d_ms, min_2d_ms, max_2d_ms = self._calc_stats(samples_2d)
             avg_1d_ms, std_1d_ms, min_1d_ms, max_1d_ms = self._calc_stats(samples_1d)
             speedup_pct = ((avg_2d_ms - avg_1d_ms) / avg_2d_ms * 100.0) if avg_2d_ms > 0 else 0.0
+            ops = size * size
+            ns_per_op = (avg_2d_ms * 1_000_000.0) / ops
             mem_info = Matrix2D.estimate_pair_memory_mib(size)
 
             results.append(
                 {
                     "size": size,
-                    "ops": size * size,
+                    "ops": ops,
                     "repeats": effective_iters,
                     "warmup": warm,
                     "avg_2d_ms": avg_2d_ms,
                     "std_2d_ms": std_2d_ms,
                     "min_2d_ms": min_2d_ms,
                     "max_2d_ms": max_2d_ms,
+                    "ns_per_op": ns_per_op,
                     "avg_1d_ms": avg_1d_ms,
                     "std_1d_ms": std_1d_ms,
                     "min_1d_ms": min_1d_ms,
@@ -409,29 +422,44 @@ class MacEngine:
         }
 
     def measure_large_scale_sample(self, size: int = 1000, repeats: int = 3, warmup: int = 1) -> dict:
-        """대형 정방 행렬(기본 1000×1000 = 1,000,000 원소) 실제 단일 샘플 실측 시간(ms) 및 메모리(MiB) 측정"""
+        """대형 정방 행렬(1000×1000 = 1M 원소) 실제 시간(ms) 및 표준 tracemalloc 피크 힙 메모리(MiB) 측정"""
+        was_tracing = tracemalloc.is_tracing()
+        if not was_tracing:
+            tracemalloc.start()
+        else:
+            tracemalloc.reset_peak()
+
         row_zeros = [0.0] * size
         mid = size // 2
-        grid = [list(row_zeros) for _ in range(size)]
+        grid_p = [list(row_zeros) for _ in range(size)]
+        grid_f = [list(row_zeros) for _ in range(size)]
         for idx in range(size):
-            grid[mid][idx] = 1.0
-            grid[idx][mid] = 1.0
-        pattern = Matrix2D(grid)
+            grid_p[mid][idx] = 1.0
+            grid_p[idx][mid] = 1.0
+            grid_f[mid][idx] = 1.0
+            grid_f[idx][mid] = 1.0
+        pattern = Matrix2D(grid_p)
+        filter_mat = Matrix2D(grid_f)
+        _, peak_bytes = tracemalloc.get_traced_memory()
+        if not was_tracing:
+            tracemalloc.stop()
+
         flat_p = pattern.to_flat_list()
+        flat_f = filter_mat.to_flat_list()
 
         for _ in range(max(0, warmup)):
-            self.compute_mac_2d(pattern, pattern)
-            self.compute_mac_1d(flat_p, flat_p)
+            self.compute_mac_2d(pattern, filter_mat)
+            self.compute_mac_1d(flat_p, flat_f)
 
         iters = max(1, repeats)
         t0 = time.perf_counter()
         for _ in range(iters):
-            self.compute_mac_2d(pattern, pattern)
+            self.compute_mac_2d(pattern, filter_mat)
         measured_2d_ms = ((time.perf_counter() - t0) / iters) * 1000.0
 
         t1 = time.perf_counter()
         for _ in range(iters):
-            self.compute_mac_1d(flat_p, flat_p)
+            self.compute_mac_1d(flat_p, flat_f)
         measured_1d_ms = ((time.perf_counter() - t1) / iters) * 1000.0
 
         mem = Matrix2D.estimate_pair_memory_mib(size)
@@ -441,6 +469,7 @@ class MacEngine:
             "repeats": iters,
             "measured_2d_ms": measured_2d_ms,
             "measured_1d_ms": measured_1d_ms,
+            "tracemalloc_peak_mib": peak_bytes / (1024.0 * 1024.0),
             "est_python_2d_mib": mem["python_2d_mib"],
             "est_contiguous_fp64_mib": mem["contiguous_fp64_mib"],
         }
@@ -845,15 +874,17 @@ class SimulatorApp:
         print("#----------------------------------------")
         print(
             f"{'크기':<7}{'반복수':<8}{'2D평균(ms)':<12}{'표준편차(±ms)':<14}"
-            f"{'최소~최대(ms)':<18}{'1D평균(ms)':<12}{'연산수(N²)':<11}{'예상메모리(MiB)':<14}"
+            f"{'최소~최대(ms)':<18}{'1D평균(ms)':<12}{'연산수(N²)':<11}"
+            f"{'단위시간(ns/op)':<16}{'예상메모리(MiB)':<14}"
         )
-        print("-" * 96)
+        print("-" * 112)
         for rec in records:
             label = f"{rec['size']}×{rec['size']}"
             min_max = f"{rec['min_2d_ms']:.4f}~{rec['max_2d_ms']:.4f}"
             print(
                 f"{label:<7}{rec['repeats']:<8}{rec['avg_2d_ms']:<12.4f}{rec['std_2d_ms']:<14.4f}"
-                f"{min_max:<18}{rec['avg_1d_ms']:<12.4f}{rec['ops']:<11}{rec['est_mem_mib']:<14.4f}"
+                f"{min_max:<18}{rec['avg_1d_ms']:<12.4f}{rec['ops']:<11}"
+                f"{rec['ns_per_op']:<16.1f}{rec['est_mem_mib']:<14.4f}"
             )
 
         projection = self.engine.project_large_scale(records[-1], target_size=1000)
@@ -1009,6 +1040,7 @@ class SimulatorApp:
                     fail_cases.append(
                         {
                             "case_id": case_id,
+                            "target_filter": f"size_{target_n}",
                             "status_code": status_code,
                             "severity": severity,
                             "predicted": predicted,
@@ -1038,6 +1070,7 @@ class SimulatorApp:
                 fail_cases.append(
                     {
                         "case_id": case_id,
+                        "target_filter": "미매칭/오류",
                         "status_code": self.STATUS_SCHEMA_ERROR,
                         "severity": self.SEVERITY_HIGH,
                         "predicted": "ERROR",
@@ -1052,6 +1085,8 @@ class SimulatorApp:
         )
 
         fail_count = total_count - pass_count
+        undecided_count = sum(1 for fc in fail_cases if fc["status_code"] == self.STATUS_TIE)
+        undecided_rate_pct = (undecided_count / total_count * 100.0) if total_count > 0 else 0.0
         analyzed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         summary_payload = {
             "analyzed_at": analyzed_at,
@@ -1065,6 +1100,8 @@ class SimulatorApp:
             "total": total_count,
             "passed": pass_count,
             "failed": fail_count,
+            "undecided_count": undecided_count,
+            "undecided_rate_pct": round(undecided_rate_pct, 2),
             "fail_cases": fail_cases,
             "benchmarks": bench_records,
             "large_scale_projection_1000x1000": projection_1m,
@@ -1080,14 +1117,14 @@ class SimulatorApp:
         print("#----------------------------------------")
         print(f"총 테스트: {total_count}개")
         print(f"통과: {pass_count}개")
-        print(f"실패: {fail_count}개")
+        print(f"실패: {fail_count}개 (동점 UNDECIDED 빈도: {undecided_count}개, {undecided_rate_pct:.1f}%)")
         print(f"로드된 필터 후보 목록: {candidates_display}")
 
         if fail_cases:
-            print("\n실패 케이스 (심각도 및 표준 상태 코드 포함):")
+            print("\n실패 케이스 (심각도·상태 코드 및 참조 필터 포함):")
             for item in fail_cases:
                 print(
-                    f"- [{item['severity']}|code={item['status_code']}] "
+                    f"- [{item['severity']}|code={item['status_code']}|filter={item['target_filter']}] "
                     f"{item['case_id']}: {item['reason']}"
                 )
         else:
@@ -1152,13 +1189,13 @@ class SimulatorApp:
 
         sample_1m = self.engine.measure_large_scale_sample(size=1000, repeats=3, warmup=1)
         print(
-            f"\n[1000×1000 대형 입력(1,000,000 원소) 실제 샘플 측정 (repeats={sample_1m['repeats']}회, warmup=1회)]"
+            f"\n[1000×1000 대형 입력(1,000,000 원소) 실제 샘플 측정 — time.perf_counter + tracemalloc]"
         )
         print(
             f"  - 2D 실측: {sample_1m['measured_2d_ms']:.2f} ms | "
             f"1D 실측: {sample_1m['measured_1d_ms']:.2f} ms | "
-            f"파이썬 2D 메모리: {sample_1m['est_python_2d_mib']:.2f} MiB "
-            f"(연속 float64 버퍼 시 {sample_1m['est_contiguous_fp64_mib']:.2f} MiB)"
+            f"tracemalloc 피크 힙: {sample_1m['tracemalloc_peak_mib']:.2f} MiB "
+            f"(수식 추정 {sample_1m['est_python_2d_mib']:.2f} MiB / 연속 float64 버퍼 시 {sample_1m['est_contiguous_fp64_mib']:.2f} MiB)"
         )
 
         bottleneck = self.engine.benchmark_serial_vs_threaded(size=25, batch_filters=64, workers=4)

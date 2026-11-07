@@ -89,11 +89,15 @@ class TestMacEngineWarmupStatsAndProjections(unittest.TestCase):
         self.assertEqual(records[0]["warmup"], 5)
         self.assertGreaterEqual(records[0]["max_2d_ms"], records[0]["min_2d_ms"])
         self.assertGreaterEqual(records[0]["std_2d_ms"], 0.0)
+        self.assertGreater(records[0]["ns_per_op"], 0.0)
         self.assertGreater(records[0]["est_mem_mib"], 0.0)
 
         proj = engine.project_large_scale(records[-1], target_size=1000)
         self.assertEqual(proj["ops"], 1_000_000)
         self.assertGreater(proj["projected_2d_ms"], 0.0)
+
+        sample = engine.measure_large_scale_sample(size=50, repeats=2, warmup=1)
+        self.assertGreater(sample["tracemalloc_peak_mib"], 0.0)
 
     def test_serial_vs_threaded_bottleneck_experiment(self):
         engine = MacEngine()
@@ -133,6 +137,8 @@ class TestDatasetEvaluationReportCodesAndLocalization(unittest.TestCase):
         self.assertEqual(summary["total"], 6)
         self.assertEqual(summary["passed"], 3)
         self.assertEqual(summary["failed"], 3)
+        self.assertEqual(summary["undecided_count"], 3)
+        self.assertAlmostEqual(summary["undecided_rate_pct"], 50.0)
         self.assertGreaterEqual(summary["report_line_count"], SimulatorApp.MIN_REPORT_LINES)
         self.assertEqual(summary["loaded_filter_candidates_display"], "[size_5, size_13, size_25]")
 
