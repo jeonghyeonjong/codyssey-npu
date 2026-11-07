@@ -176,3 +176,87 @@ class MacEngine:
         return score_a, score_b, elapsed_ms
 
 
+    def benchmark_sizes(
+        self,
+        sizes: list[int],
+        filters_by_size: dict[int, dict[str, Matrix2D]] | None = None,
+        repeats: int = DEFAULT_REPEATS,
+    ) -> list[dict]:
+        """크기별(3×3 ~ 25×25 등) 단일 MAC 연산의 2D 중첩 반복 vs 1D 평탄화 평균 시간(ms) 및 연산 횟수(N²) 측정"""
+        iters = max(10, repeats)
+        results: list[dict] = []
+
+        for size in sizes:
+            pattern = PatternGenerator.generate_cross(size)
+            if filters_by_size and size in filters_by_size and LabelNormalizer.CROSS in filters_by_size[size]:
+                filter_mat = filters_by_size[size][LabelNormalizer.CROSS]
+            else:
+                filter_mat = PatternGenerator.generate_cross(size)
+
+            # I/O 및 변환 오버헤드를 측정 구간에서 제외하기 위해 사전에 1D 배열 준비
+            flat_p = pattern.to_flat_list()
+            flat_f = filter_mat.to_flat_list()
+
+            t0 = time.perf_counter()
+            for _ in range(iters):
+                self.compute_mac_2d(pattern, filter_mat)
+            avg_2d_ms = ((time.perf_counter() - t0) / iters) * 1000.0
+
+            t1 = time.perf_counter()
+            for _ in range(iters):
+                self.compute_mac_1d(flat_p, flat_f)
+            avg_1d_ms = ((time.perf_counter() - t1) / iters) * 1000.0
+
+            speedup_pct = ((avg_2d_ms - avg_1d_ms) / avg_2d_ms * 100.0) if avg_2d_ms > 0 else 0.0
+            results.append(
+                {
+                    "size": size,
+                    "ops": size * size,
+                    "repeats": iters,
+                    "avg_2d_ms": avg_2d_ms,
+                    "avg_1d_ms": avg_1d_ms,
+                    "speedup_pct": speedup_pct,
+                }
+            )
+        return results
+
+
+class PatternGenerator:
+    """임의의 크기 N에 대해 N×N 십자가(Cross) 및 대각선(X) 2차원 패턴을 동적 생성하는 클래스 (보너스 과제 & 벤치마크 재활용)"""
+
+    @staticmethod
+    def _validate_size(size: int) -> int:
+        if isinstance(size, bool) or not isinstance(size, int) or size < 3:
+            raise ValueError("패턴 크기 N은 3 이상의 정수여야 합니다.")
+        return size
+
+    @classmethod
+    def generate_cross(cls, size: int) -> Matrix2D:
+        """중앙 행과 중앙 열이 1.0이고 나머지가 0.0인 N×N 십자가(Cross) 패턴 생성"""
+        n = cls._validate_size(size)
+        mid = n // 2
+        grid = [
+            [1.0 if (r == mid or c == mid) else 0.0 for c in range(n)]
+            for r in range(n)
+        ]
+        return Matrix2D(grid)
+
+    @classmethod
+    def generate_x(cls, size: int) -> Matrix2D:
+        """주대각선(r == c)과 부대각선(r + c == N - 1)이 1.0인 N×N X자 패턴 생성"""
+        n = cls._validate_size(size)
+        grid = [
+            [1.0 if (r == c or r + c == n - 1) else 0.0 for c in range(n)]
+            for r in range(n)
+        ]
+        return Matrix2D(grid)
+
+    @classmethod
+    def generate_pair(cls, size: int) -> dict[str, Matrix2D]:
+        """지정된 크기 N의 표준 라벨(Cross, X) 패턴 쌍 반환"""
+        return {
+            LabelNormalizer.CROSS: cls.generate_cross(size),
+            LabelNormalizer.X: cls.generate_x(size),
+        }
+
+
