@@ -10,7 +10,7 @@
 - **개발 및 실행 환경**:
   - OS / Shell: Windows 11 / Git Bash
   - Language: Python 3.15.2 (Python 3.8 이상 공식 요구조건 충족, 순수 표준 라이브러리 `json`, `time`, `math`, `os`, `shutil`, `sys`, `datetime`, `concurrent.futures`만 사용)
-  - Version Control: Git / GitHub (`feature/mac-engine` 기능 브랜치 `--no-ff` 병합 및 `clone` / `pull` 원격 동기화 완비)
+  - Version Control: Git / GitHub (`feature/mac-engine`·`feature/weight-scale-check` 기능 브랜치 `--no-ff` 병합 및 `clone` / `pull` 원격 동기화 완비)
 
 ### 시각 패턴의 배열 표현, 행 우선 MAC 유사도·정규화 수식 및 NPU의 필요성
 1. **2차원 숫자 배열 표현**: 컴퓨터는 십자가(`+`)나 대각선(`X`)을 시각적으로 인식하지 못하므로 픽셀 활성화 여부를 `0.0`과 `1.0`(또는 실수 가중치)으로 나타낸 $N \times N$ 정방 배열로 변환해 처리합니다.
@@ -35,10 +35,11 @@
     ├── report_state.json                 # 모드 2 실행 시 콘솔 출력과 동기화 저장되는 JSON 리포트 (런타임 생성)
     ├── tests/
     │   ├── __init__.py                   # 테스트 패키지 초기화
-    │   └── test_npu_simulator.py         # MAC 정합성, 워밍업·표준편차, 상태코드(tie), 다국어 카탈로그 등 단위 테스트 10종
+    │   └── test_npu_simulator.py         # MAC 정합성, 가중치 스케일 점검, 워밍업·표준편차, 상태코드(tie), 다국어 카탈로그 등 단위 테스트 11종
     ├── docs/                             # 실행 화면 증빙 스크린샷 및 리포트 JSON 샘플
     │   ├── sample_report_state.json      # 모드 2 공식 data.json 실행으로 생성된 실제 구조화 리포트 샘플
     │   ├── mode1_interactive.png         # 모드 1: 원인별 입력 오류, 일치율·일원화 판정 및 3×3 성능 표
+    │   ├── mode1_weight_scale_check.png  # 모드 1: 가중치 스케일 불균형 진단 및 L1 정규화 참고 판정 화면
     │   ├── mode2_json_analysis.png       # 모드 2: 상태코드(tie)·심각도, 분산·메모리·1M 예측 성능 표 및 리포트 저장
     │   ├── error_isolation.png           # 후보 목록 일원화·한 줄 별칭 요약·대문자 키 격리 및 Ctrl+C 안전 종료
     │   ├── bonus_1d_generator.png        # 보너스: 7×7 생성기, 1D 비교, 1000×1000(1M) 실측 및 스레드 병목 실험
@@ -53,7 +54,7 @@
     $ cd /c/codyssey-workspace/codyssey-npu
     $ python main.py
 
-    # 자동화 단위 테스트 10종 전체 실행
+    # 자동화 단위 테스트 11종 전체 실행
     $ python -m unittest tests/test_npu_simulator.py -v
 
 매개변수를 조정해 실험할 때는 `MacEngine(epsilon=1e-9, repeats=1000, warmup=20)` 또는 `SimulatorApp(locale="ko" | "en")` 생성자 인자(및 `benchmark_sizes(..., warmup=0)` 옵션)를 변경하면 판정 메시지, 성능 표 헤더, 저장 리포트에 일괄 반영됩니다.
@@ -87,7 +88,7 @@
 | **`MessageCatalog`** | `TEMPLATES["ko"\|"en"]`, `format(key, locale)` | 입력·스키마·안전 종료 안내 문구를 상수 템플릿으로 분리하여 재사용성 및 다국어(한국어/영어) 확장 대비 |
 | **`Matrix2D`** | `get_value`, `set_value`, `to_flat_list`, `estimate_pair_memory_mib` | $N \times N$ 정방 배열 검증·셀 접근, 행 우선 1D 평탄화 및 CPython 2D 객체 대비 연속 `float64` 메모리(`MiB`) 산출 |
 | **`LabelNormalizer`** | `CROSS`, `X`, `UNDECIDED`, `ALLOWED_ALIAS_ONELINE`, `normalize` | 외부 필터·기대값 라벨을 표준 라벨(`Cross`, `X`)로 정규화하고 실패 시 한 줄 별칭 요약 안내 |
-| **`MacEngine`** | `compute_mac_2d`, `compute_mac_1d`, `benchmark_sizes`, `measure_large_scale_sample` | 행 우선 순수 반복문 2D/1D MAC, 점수 범위 정규화, 워밍업(`warmup`)·표준편차·최소/최대 벤치마크 및 `1M` 실측 |
+| **`MacEngine`** | `compute_mac_2d`, `compute_mac_1d`, `check_weight_scale`, `benchmark_sizes`, `measure_large_scale_sample` | 행 우선 순수 반복문 2D/1D MAC, 점수 범위 정규화, 필터 가중치 스케일(L1 합) 불균형 점검, 워밍업(`warmup`)·표준편차·최소/최대 벤치마크 및 `1M` 실측 |
 | **`PatternGenerator`** | `generate_cross(size)`, `generate_x(size)`, `generate_pair(size)` | 임의 크기 $N \times N$ 십자가(`Cross`) 및 대각선(`X`) 행렬 동적 생성 |
 | **`DatasetRepository`** | `extract_size_from_key`, `format_candidate_sizes`, `load_dataset`, `save_report_atomic` | 비정상 키 변형 검증, 콘솔·리포트 후보 목록 포맷 일원화, `.corrupt` 격리·`.bak` 복구 및 원자적 리포트 저장 |
 | **`SimulatorApp`** | `format_judgment_line`, `render_markdown_report_lines`, `evaluate_dataset`, `run` | `epsilon` 일원화 판정 출력, 상태 코드(`tie`)·심각도(`LOW`~`HIGH`) 태깅, 최소 10줄 리포트 검증 및 안전 종료 |
@@ -149,6 +150,28 @@
 
 ---
 
+### 6) 라벨 정규화 vs 가중치 정규화: 필터 B에 `0 10 0`을 넣으면 왜 `판정: B`가 나오는가
+
+이 프로젝트에는 이름이 비슷한 **'정규화'가 두 종류** 있으며, 역할이 완전히 다릅니다.
+
+| 구분 | 담당 코드 | 무엇을 맞추는가 | 적용 시점 |
+| :--- | :--- | :--- | :--- |
+| **라벨 정규화** | `LabelNormalizer.normalize` | 문자열 이름표 통일 (`'+'`, `'cross'` → `Cross` / `'x'` → `X`) | 모드 2 `data.json` 필터 키·`expected` 비교 시 항상 |
+| **가중치 정규화 (L1)** | `MacEngine.normalize_filter_l1`, `check_weight_scale` | 필터 숫자 가중치의 '저울 눈금' 통일 ($\hat{F} = F / \sum \lvert F \rvert$, 절댓값 합 = 1) | 모드 1 스케일 점검 섹션, 모드 2 동점 케이스 보조 재검증 (참고용) |
+
+- **현상**: 필터 A = 십자가(`0 1 0 / 1 1 1 / 0 1 0`), 필터 B = X 모양이지만 2행을 `0 10 0`으로 입력, 패턴 = 십자가.
+  - 원시 MAC: `A = 1+1+1+1+1 = 5`, `B = 중앙 1칸 × 10 = 10` → **`판정: B`**.
+- **원인**: MAC 점수는 '겹치는 칸 수'가 아니라 **'겹친 칸의 가중치 합'** 입니다. 필터 B의 가중치 절댓값 합(`14`)이 A(`5`)의 `2.8배`라서, 모양은 덜 닮았어도 큰 숫자 한 칸이 점수를 끌어올립니다. 이는 계산 오류가 아니라 **MAC 연산의 정의대로 동작한 결과**입니다.
+- **왜 공식 판정을 바꾸지 않는가**: 평가 항목 1(*"MAC 점수/판정(A/B/판정 불가)/시간(ms)이 출력되는가"*)과 미션 명세는 판정을 **MAC 점수 비교**로 정의하므로 `판정:` 줄은 원시 점수 기준을 유지해야 합니다. 판정 기준을 임의로 바꾸면 `data.json` 공식 결과(3 PASS / 3 FAIL)까지 달라집니다.
+- **대신 추가한 보완 (`SimulatorApp.print_weight_scale_check`)**: 두 필터의 절댓값 합 비율이 `1.5배` 이상이거나 L1 정규화 후 판정이 뒤집히면 `[3-1] 가중치 스케일 점검` 섹션을 출력해 **경고 + L1 정규화 참고 판정(`A=1.0000 | B=0.7143 → A`)** 을 함께 보여줍니다. 균형 상태(예: `5 vs 5`)에서는 한 줄 확인 메시지만 출력합니다.
+
+| 입력 시나리오 | 가중치 절댓값 합 (A / B) | 원시 MAC (A / B) | 공식 `판정:` | L1 정규화 점수 (A / B) | 참고 판정 | 스케일 점검 출력 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 정상 X 필터 + 십자가 패턴 | `5 / 5` | `5 / 1` | `A` | `1.0000 / 0.2000` | `A` | 한 줄 확인 (균형) |
+| **B 2행 `0 10 0` + 십자가 패턴** | **`5 / 14`** | **`5 / 10`** | **`B`** | **`1.0000 / 0.7143`** | **`A`** | **`[3-1]` 경고 섹션 + 판정 뒤집힘 해석** |
+
+---
+
 ## 5. 모드별 실제 실행 로그 및 증빙 이미지
 
 ### 1) 모드 1: 원인별 오류 안내(입력 예시 포함), 일치율, `epsilon` 일원화 판정 및 `ns/op` 성능 표
@@ -199,19 +222,58 @@
     #----------------------------------------
     A 점수: 1 (최대 가능 5 대비 일치율 20.0%)
     B 점수: 5 (최대 가능 5 대비 일치율 100.0%)
-    연산 시간(평균/1000회, 워밍업 20회): 0.0018 ms
+    연산 시간(평균/1000회, 워밍업 20회): 0.0021 ms
     판정: B (기준 epsilon=1e-09)
+    [가중치 스케일 점검] 필터 A·B 가중치 절댓값 합 5 vs 5 — 균형 상태, 원시 점수 비교 신뢰 가능
 
     #----------------------------------------
     # [4] 성능 분석 (repeats=1000회, warmup=20회)
     #----------------------------------------
     크기     반복수     2D평균(ms)    표준편차(±ms)     최소~최대(ms)         1D평균(ms)    연산수(N²)    단위시간(ns/op)     예상메모리(MiB)    
     ----------------------------------------------------------------------------------------------------------------
-    3×3    1000    0.0009      0.0002        0.0009~0.0016     0.0007      9          104.6           0.0010
+    3×3    1000    0.0009      0.0000        0.0009~0.0010     0.0008      9          97.1            0.0010
 
 ![Mode 1 Interactive Screenshot](docs/mode1_interactive.png)
 
 - **모드 1 동점(`판정 불가`) 즉시 재현 케이스**: 동일한 십자가 필터 A(`0 1 0 / 1 1 1 / 0 1 0`)와 X 필터 B(`1 0 1 / 0 1 0 / 1 0 1`)에 중앙 점 패턴(`0 0 0 / 0 1 0 / 0 0 0`)을 입력하면 두 필터 모두 중앙 1칸만 일치해 `A 점수: 1`, `B 점수: 1`이 되며 `판정: 판정 불가 (동점 기준 |A-B| < epsilon=1e-09)`가 출력됩니다.
+
+### 1-1) 모드 1 가중치 스케일 불균형 진단: 단일 좌표 가중치 편중 시 (원시 판정 유지 + 참고 판정)
+
+    필터 A (3줄 입력, 공백 구분)
+      1행: 0 1 0
+      2행: 1 1 1
+      3행: 0 1 0
+
+    필터 B (3줄 입력, 공백 구분)
+      1행: 1 0 1
+      2행: 0 10 0
+      3행: 1 0 1
+
+    패턴 (3줄 입력, 공백 구분)
+      1행: 0 1 0
+      2행: 1 1 1
+      3행: 0 1 0
+
+    #----------------------------------------
+    # [3] MAC 결과
+    #----------------------------------------
+    A 점수: 5 (최대 가능 5 대비 일치율 100.0%)
+    B 점수: 10 (최대 가능 14 대비 일치율 71.4%)
+    연산 시간(평균/1000회, 워밍업 20회): 0.0017 ms
+    판정: B (기준 epsilon=1e-09)
+
+    #----------------------------------------
+    # [3-1] 가중치 스케일 점검 (참고용 · 공식 판정 불변)
+    #----------------------------------------
+    필터 가중치 절댓값 합: A=5 | B=14 (차이 2.8배)
+    [주의] 두 필터의 '저울 눈금'이 달라 원시 MAC 점수가 큰 가중치 쪽으로 쏠릴 수 있습니다.
+    L1 정규화 점수(합=1로 눈금 통일): A=1.0000 | B=0.7143 -> 참고 판정: A
+    [해석] 원시 판정(B)과 정규화 참고 판정(A)이 다릅니다. 필터 가중치 입력값(예: 1 대신 10)을 다시 확인하세요.
+    ※ 공식 '판정:' 줄은 과제 명세대로 원시 MAC 점수 기준이며, 본 섹션은 해석 보조 정보입니다.
+
+![Mode 1 Weight Scale Check Screenshot](docs/mode1_weight_scale_check.png)
+
+- **읽는 법**: `판정: B`는 MAC 정의(가중치 합)대로 계산한 공식 결과이고, `참고 판정: A`는 두 필터의 눈금을 같게 맞췄을 때 "모양이 더 닮은 쪽"입니다. 두 판정이 다르면 필터 입력값을 재확인하라는 신호입니다 (회귀 테스트: `test_weight_scale_imbalance_filter_b_ten_case`).
 
 ### 2) 모드 2: `data.json` 상태코드(`tie`)·동점 빈도·참조 필터, `ns/op`·메모리 및 리포트 저장
 
@@ -366,11 +428,19 @@
 ![Git Clone and Pull Sync Screenshot](docs/git_clone_pull.png)
 
     $ git rev-list --count HEAD
-    20
+    26
 
     jeonghyeonjong@DESKTOP MINGW64 /c/codyssey-workspace/codyssey-npu (main)
     $ git log --oneline --graph
-    * (HEAD -> main, origin/main) docs: add epsilon tuning workflow, Mode 1 tie recipe, and quantified accelerator speedups
+    * (HEAD -> main, origin/main) docs: 가중치 스케일 불균형 진단 및 L1 정규화 해설 문서화
+    * docs: 모드 1 터미널 실행 화면 및 검증 스크린샷 갱신
+    *   015c925 merge: merge branch 'feature/weight-scale-check' into main
+    |\  
+    | * d17891b test: cover filter B '0 10 0' weight-scale imbalance and balanced cases
+    | * 0024acb feat: show weight-scale diagnostic section in Mode 1 without altering official judgment
+    | * ac31a36 feat: add weight-scale imbalance check and L1 reference judgment to MacEngine
+    |/  
+    * df0a76a docs: add epsilon tuning workflow, Mode 1 tie recipe, and quantified accelerator speedups
     * 460d93c feat: add ns/op metric, tracemalloc heap profiler, undecided stats, and 4-layer docstring
     * 888dfbb docs: add format standardization, key fix matrix, hardware portability checklist, and PR template
     * a7621d7 feat: add MessageCatalog, warmup/stddev/MiB stats, tie status codes, and 1M MAC profiler
@@ -409,6 +479,10 @@
 - **문제 현상**: 콘솔 에러 문구와 리포트 필드의 후보 목록 표기 형식이 달라지거나 `cp949` 파이프에서 특수 기호 인코딩 오류가 날 수 있었습니다.
 - **원인 및 해결**: `DatasetRepository.format_candidate_sizes()` 단일 포맷터로 `[size_5, size_13, size_25]` 표기를 일원화하고 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`를 적용했습니다.
 
+### 사례 4: 필터 B에 `0 10 0` 입력 시 십자가 패턴이 `B`로 판정되는 혼동 해소
+- **문제 현상**: 모드 1에서 필터 B 2행을 `0 10 0`으로 입력하자 십자가 패턴인데도 `판정: B`(A=5, B=10)가 출력되어 "정규화 함수가 있는데 왜?"라는 혼동이 발생했습니다.
+- **원인 및 해결**: 기존 '정규화'는 라벨 문자열을 통일하는 `LabelNormalizer`였고, 숫자 가중치 크기는 원시 MAC 그대로 비교하는 것이 과제 명세입니다. 공식 `판정:` 줄은 유지하되 `MacEngine.check_weight_scale()`과 `SimulatorApp.print_weight_scale_check()`를 추가해 가중치 절댓값 합 비율(`14/5 = 2.8배`) 경고와 L1 정규화 참고 판정(`A`)을 보조 출력하도록 개선했습니다.
+
 ---
 
 ## 9. 요구사항 변경 관리, 신규 라벨 확장 체크리스트 및 PR·테스트 템플릿 (Maintenance Matrix)
@@ -421,6 +495,7 @@
 | **다국어(영문 등) 메시지 전환** | `main.py` | `MessageCatalog`, `SimulatorApp` | `TEMPLATES`, `SimulatorApp(locale="en")` | 상수 템플릿 키 유지 상태에서 언어 코드만 추가·전환 |
 | **신규 도형 라벨 추가** (`Circle` 등) | `main.py` | `LabelNormalizer`, `DatasetRepository`, `SimulatorApp` | `_LABEL_MAP`, `REQUIRED_LABELS`, `evaluate_dataset` | 아래 6단계 체크리스트 및 PR 템플릿 절차에 따라 확장 |
 | **필터 L1 정규화 기본 적용** | `main.py` | `MacEngine`, `DatasetRepository` | `normalize_filter_l1`, `load_normalized_filters` | 필터 로드 시점에 `normalize_filter_l1()` 거쳐 저장 |
+| **가중치 스케일 경고 임계값 변경** | `main.py` | `MacEngine`, `SimulatorApp` | `check_weight_scale(imbalance_ratio=1.5)`, `print_weight_scale_check` | 경고 기준 배율 조정 (공식 `판정:` 줄 및 `data.json` 결과에는 영향 없음) |
 
 ### 2) 신규 도형 라벨(예: `Circle`) 추가 시 6단계 수정 체크리스트, PR 템플릿 링크 및 테스트 템플릿
 
@@ -452,6 +527,7 @@
 ## 10. 공식 요구사항 및 품질 기준 달성 요약
 
 - [x] **순수 표준 라이브러리 구현**: 외부 패키지 없이 행 우선(`Row-major`) 2D/1D MAC, 점수 정규화 비율, 메모리 추정 구현
+- [x] **가중치 스케일 점검**: 라벨 정규화와 가중치(L1) 정규화를 구분하고, 필터 B `0 10 0` 같은 스케일 불균형 시 공식 판정은 유지한 채 경고·참고 판정을 보조 출력
 - [x] **다국어 카탈로그 및 일원화 진단**: `MessageCatalog`(`ko`/`en`), 9종 키 변형 수정 가이드, 한 줄 별칭 요약, 콘솔·리포트 후보 포맷(`[size_5, size_13, size_25]`) 통일
 - [x] **자동화 메타데이터 및 최소 줄 수 보장**: 판정 줄 `epsilon` 일원화 병기, `status_code`(`tie` / `schema_error`)·`severity`(`LOW`~`HIGH`) 태깅, `MIN_REPORT_LINES=10` 검증 및 `docs/sample_report_state.json` 수록
 - [x] **고정밀 벤치마크 및 하드웨어 이식성**: `warmup=20`·표준편차·최소/최대·예상 메모리(`MiB`), `1000×1000`(`1M` 원소) 예측 대 실측 비교, GIL 병목 실험, AVX/Tensor Core/NPU 하드웨어 제약 체크리스트 및 PR 템플릿 완비
