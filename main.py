@@ -2,7 +2,7 @@
 
 [전체 아키텍처 4계층 구조 요약 (동료평가 브리핑용)]
   1. 데이터·번역 계층 : Matrix2D(N×N 숫자 격자판), LabelNormalizer('+'/'cross' 표준화), MessageCatalog(다국어 안내 사전)
-  2. 순수 연산 계층   : MacEngine(행 우선 2D/1D MAC·epsilon 동점 판정·워밍업 벤치마크), PatternGenerator(N×N 패턴 생성)
+  2. 순수 연산 계층   : MacEngine(행 우선 2D/1D MAC·epsilon 동점 판정·가중치 스케일 점검·워밍업 벤치마크), PatternGenerator(N×N 패턴 생성)
   3. 저장소 계층      : DatasetRepository(data.json 로드, size_N 키 추출, .bak 자동 복구, report_state.json 원자적 저장)
   4. 제어·출력 계층   : SimulatorApp(모드 1 대화형·모드 2 일괄 검증·모드 3 최적화 실험 및 Ctrl+C 안전 종료)
 """
@@ -157,7 +157,11 @@ class Matrix2D:
 
 
 class LabelNormalizer:
-    """외부 JSON 키 및 expected 표기를 내부 표준 라벨(Cross, X)로 일관되게 정규화하는 클래스 (SRP)"""
+    """외부 JSON 키 및 expected 표기를 내부 표준 라벨(Cross, X)로 일관되게 정규화하는 클래스 (SRP)
+
+    [주의] 여기서 '정규화'는 '이름표(문자열) 통일'이다. 필터 숫자 가중치의 크기를 맞추는
+    '가중치 정규화'는 MacEngine.normalize_filter_l1 / check_weight_scale 이 별도로 담당한다.
+    """
 
     CROSS = "Cross"
     X = "X"
@@ -258,6 +262,53 @@ class MacEngine:
             return Matrix2D(filter_mat.to_list())
         norm_grid = [[val / abs_sum for val in row] for row in filter_mat._grid]
         return Matrix2D(norm_grid)
+
+    @staticmethod
+    def sum_abs_weights(filter_mat: Matrix2D) -> float:
+        """필터 가중치 절댓값 총합(L1 노름) 산출 — 필터 간 '저울 눈금(스케일)' 비교 기준"""
+        total = 0.0
+        for row in filter_mat._grid:
+            for val in row:
+                total += abs(val)
+        return total
+
+    def check_weight_scale(
+        self,
+        pattern: Matrix2D,
+        filter_a: Matrix2D,
+        filter_b: Matrix2D,
+        imbalance_ratio: float = 1.5,
+    ) -> dict[str, float | bool | str]:
+        """두 필터의 가중치 총합(스케일) 불균형 여부 점검 및 L1 정규화 후 참고 판정 산출 (공식 원시 판정은 변경하지 않음)
+
+        예) 필터 B 2행에 '0 10 0'처럼 큰 가중치가 섞이면 B의 절댓값 합(14)이 A(5)의 2.8배가 되어,
+        모양이 덜 닮아도 원시 MAC 점수는 B가 커질 수 있다. 이때 L1 정규화(합=1)로 눈금을 맞춰 비교한 참고값을 제공한다.
+        """
+        sum_a = self.sum_abs_weights(filter_a)
+        sum_b = self.sum_abs_weights(filter_b)
+        smaller = min(sum_a, sum_b)
+        ratio = (max(sum_a, sum_b) / smaller) if smaller > 0.0 else math.inf
+        norm_score_a = self.compute_mac_2d(pattern, self.normalize_filter_l1(filter_a))
+        norm_score_b = self.compute_mac_2d(pattern, self.normalize_filter_l1(filter_b))
+        raw_judgment = self.judge_scores(
+            self.compute_mac_2d(pattern, filter_a),
+            self.compute_mac_2d(pattern, filter_b),
+            label_a="A", label_b="B", tie_label="판정 불가",
+        )
+        norm_judgment = self.judge_scores(
+            norm_score_a, norm_score_b, label_a="A", label_b="B", tie_label="판정 불가"
+        )
+        return {
+            "sum_abs_a": sum_a,
+            "sum_abs_b": sum_b,
+            "scale_ratio": ratio,
+            "imbalanced": ratio >= imbalance_ratio,
+            "norm_score_a": norm_score_a,
+            "norm_score_b": norm_score_b,
+            "raw_judgment": raw_judgment,
+            "norm_judgment": norm_judgment,
+            "judgment_flipped": raw_judgment != norm_judgment,
+        }
 
     @classmethod
     def compute_score_bounds_and_ratio(
@@ -956,8 +1007,36 @@ class SimulatorApp:
             f"연산 시간(평균/{self.engine.repeats}회, 워밍업 {self.engine.warmup}회): {avg_pair_ms:.4f} ms"
         )
         print(self.format_judgment_line(judgment, self.engine.epsilon))
+        self.print_weight_scale_check(pattern, filter_a, filter_b)
 
         self.print_benchmark_table([3], section_num=4, include_projection=False)
+
+    def print_weight_scale_check(self, pattern: Matrix2D, filter_a: Matrix2D, filter_b: Matrix2D) -> dict:
+        """모드 1 보조 진단: 필터 가중치 스케일 불균형 경고 + L1 정규화 참고 판정 (공식 '판정:' 줄은 원시 MAC 기준 유지)"""
+        scale = self.engine.check_weight_scale(pattern, filter_a, filter_b)
+        sum_a = f"{scale['sum_abs_a']:.4f}".rstrip("0").rstrip(".")
+        sum_b = f"{scale['sum_abs_b']:.4f}".rstrip("0").rstrip(".")
+        if not scale["imbalanced"] and not scale["judgment_flipped"]:
+            print(f"[가중치 스케일 점검] 필터 A·B 가중치 절댓값 합 {sum_a} vs {sum_b} — 균형 상태, 원시 점수 비교 신뢰 가능")
+            return scale
+
+        ratio_str = "∞" if math.isinf(scale["scale_ratio"]) else f"{scale['scale_ratio']:.1f}"
+        print("\n#----------------------------------------")
+        print("# [3-1] 가중치 스케일 점검 (참고용 · 공식 판정 불변)")
+        print("#----------------------------------------")
+        print(f"필터 가중치 절댓값 합: A={sum_a} | B={sum_b} (차이 {ratio_str}배)")
+        print("[주의] 두 필터의 '저울 눈금'이 달라 원시 MAC 점수가 큰 가중치 쪽으로 쏠릴 수 있습니다.")
+        print(
+            f"L1 정규화 점수(합=1로 눈금 통일): A={scale['norm_score_a']:.4f} | "
+            f"B={scale['norm_score_b']:.4f} -> 참고 판정: {scale['norm_judgment']}"
+        )
+        if scale["judgment_flipped"]:
+            print(
+                f"[해석] 원시 판정({scale['raw_judgment']})과 정규화 참고 판정({scale['norm_judgment']})이 다릅니다. "
+                "필터 가중치 입력값(예: 1 대신 10)을 다시 확인하세요."
+            )
+        print("※ 공식 '판정:' 줄은 과제 명세대로 원시 MAC 점수 기준이며, 본 섹션은 해석 보조 정보입니다.")
+        return scale
 
     def evaluate_dataset(self) -> dict:
         """모드 2: data.json 로드 -> 정규화·크기 검증 -> 케이스별 MAC 판정(코드·심각도 태깅) -> 분산·메모리 성능표 및 리포트 저장"""
