@@ -105,6 +105,40 @@ class TestMacEngineWarmupStatsAndProjections(unittest.TestCase):
         self.assertTrue(res["parity_ok"])
         self.assertEqual(res["total_mac_ops"], 13 * 13 * 16)
 
+    def test_weight_scale_imbalance_filter_b_ten_case(self):
+        """필터 B 2행에 '0 10 0' 입력 시: 원시 판정 B(10 > 5) 유지 + L1 정규화 참고 판정 A(1.0 > 0.714)"""
+        engine = MacEngine()
+        cross = Matrix2D([[0, 1, 0], [1, 1, 1], [0, 1, 0]])
+        heavy_x = Matrix2D([[1, 0, 1], [0, 10, 0], [1, 0, 1]])
+        scale = engine.check_weight_scale(cross, cross, heavy_x)
+        self.assertEqual(scale["raw_judgment"], "B")
+        self.assertEqual(scale["norm_judgment"], "A")
+        self.assertTrue(scale["imbalanced"])
+        self.assertTrue(scale["judgment_flipped"])
+        self.assertAlmostEqual(scale["sum_abs_a"], 5.0)
+        self.assertAlmostEqual(scale["sum_abs_b"], 14.0)
+        self.assertAlmostEqual(scale["norm_score_a"], 1.0)
+        self.assertAlmostEqual(scale["norm_score_b"], 10.0 / 14.0)
+
+        # 정상 X 필터(가중치 합 5 = 5)는 균형 상태로 경고 없음, 원시·참고 판정 모두 A
+        normal_x = Matrix2D([[1, 0, 1], [0, 1, 0], [1, 0, 1]])
+        balanced = engine.check_weight_scale(cross, cross, normal_x)
+        self.assertFalse(balanced["imbalanced"])
+        self.assertFalse(balanced["judgment_flipped"])
+        self.assertEqual(balanced["raw_judgment"], "A")
+
+        # 모드 1 출력: 공식 '판정: B' 줄은 그대로, 보조 섹션에 경고·참고 판정 A 표기
+        app = SimulatorApp()
+        inputs = iter(["0 1 0", "1 1 1", "0 1 0", "1 0 1", "0 10 0", "1 0 1", "0 1 0", "1 1 1", "0 1 0"])
+        buf = io.StringIO()
+        with patch("builtins.input", lambda _p="": next(inputs)), patch("sys.stdout", buf):
+            app.engine = MacEngine(repeats=10, warmup=0)
+            app.run_user_input_mode()
+        out = buf.getvalue()
+        self.assertIn("판정: B (기준 epsilon=1e-09)", out)
+        self.assertIn("참고 판정: A", out)
+        self.assertIn("A=5 | B=14", out)
+
 
 class TestDatasetEvaluationReportCodesAndLocalization(unittest.TestCase):
     """공식 data.json 상태코드(tie)/심각도, 후보 포맷 일관성, 최소 10줄 검증 및 다국어 템플릿 확인"""
