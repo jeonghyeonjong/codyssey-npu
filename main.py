@@ -1007,8 +1007,36 @@ class SimulatorApp:
             f"연산 시간(평균/{self.engine.repeats}회, 워밍업 {self.engine.warmup}회): {avg_pair_ms:.4f} ms"
         )
         print(self.format_judgment_line(judgment, self.engine.epsilon))
+        self.print_weight_scale_check(pattern, filter_a, filter_b)
 
         self.print_benchmark_table([3], section_num=4, include_projection=False)
+
+    def print_weight_scale_check(self, pattern: Matrix2D, filter_a: Matrix2D, filter_b: Matrix2D) -> dict:
+        """모드 1 보조 진단: 필터 가중치 스케일 불균형 경고 + L1 정규화 참고 판정 (공식 '판정:' 줄은 원시 MAC 기준 유지)"""
+        scale = self.engine.check_weight_scale(pattern, filter_a, filter_b)
+        sum_a = f"{scale['sum_abs_a']:.4f}".rstrip("0").rstrip(".")
+        sum_b = f"{scale['sum_abs_b']:.4f}".rstrip("0").rstrip(".")
+        if not scale["imbalanced"] and not scale["judgment_flipped"]:
+            print(f"[가중치 스케일 점검] 필터 A·B 가중치 절댓값 합 {sum_a} vs {sum_b} — 균형 상태, 원시 점수 비교 신뢰 가능")
+            return scale
+
+        ratio_str = "∞" if math.isinf(scale["scale_ratio"]) else f"{scale['scale_ratio']:.1f}"
+        print("\n#----------------------------------------")
+        print("# [3-1] 가중치 스케일 점검 (참고용 · 공식 판정 불변)")
+        print("#----------------------------------------")
+        print(f"필터 가중치 절댓값 합: A={sum_a} | B={sum_b} (차이 {ratio_str}배)")
+        print("[주의] 두 필터의 '저울 눈금'이 달라 원시 MAC 점수가 큰 가중치 쪽으로 쏠릴 수 있습니다.")
+        print(
+            f"L1 정규화 점수(합=1로 눈금 통일): A={scale['norm_score_a']:.4f} | "
+            f"B={scale['norm_score_b']:.4f} -> 참고 판정: {scale['norm_judgment']}"
+        )
+        if scale["judgment_flipped"]:
+            print(
+                f"[해석] 원시 판정({scale['raw_judgment']})과 정규화 참고 판정({scale['norm_judgment']})이 다릅니다. "
+                "필터 가중치 입력값(예: 1 대신 10)을 다시 확인하세요."
+            )
+        print("※ 공식 '판정:' 줄은 과제 명세대로 원시 MAC 점수 기준이며, 본 섹션은 해석 보조 정보입니다.")
+        return scale
 
     def evaluate_dataset(self) -> dict:
         """모드 2: data.json 로드 -> 정규화·크기 검증 -> 케이스별 MAC 판정(코드·심각도 태깅) -> 분산·메모리 성능표 및 리포트 저장"""
